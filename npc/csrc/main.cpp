@@ -1,6 +1,31 @@
 #include <stdio.h>
+#include <nvboard.h>
+#include <Vexample.h>
+
+static Vexample dut;
+
+void nvboard_bind_all_pins(Vexample* top);
+
+void single_cycle() {
+  dut.clk = 0;dut.eval();
+  dut.clk = 1;dut.eval();
+}
+
+void reset(int n) {
+  dut.rst = 1;
+  while(n-- >0) single_cycle();
+  dut.rst = 0;
+}
+
 
 int main() {
-  printf("Hello, ysyx!\n");
+  nvboard_bind_all_pins(&dut);
+  nvboard_init();
+  reset(10);
+  while(1) {
+    nvboard_update();
+    single_cycle();
+  }
+  nvboard_quit();
   return 0;
 }
