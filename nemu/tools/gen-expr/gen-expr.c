@@ -31,8 +31,62 @@ static char *code_format =
 "  return 0; "
 "}";
 
+
+static inline uint32_t choose(uint32_t n) {
+  return rand() % n;
+}
+
+#define MAX_DEPTH 3
+static int current_depth = 0;
+
+// 递归生成主体
+static void gen_rand_expr_recursive() {
+  if (current_depth > MAX_DEPTH) {
+    // 达到最大深度，强制生成纯数字（1到100）
+    sprintf(buf + strlen(buf), "%u", choose(100) + 1);
+    return;
+  }
+
+  current_depth++;
+
+  switch (choose(3)) {
+    case 0: 
+      sprintf(buf + strlen(buf), "%u", choose(100) + 1);
+      break;
+
+    case 1: 
+      sprintf(buf + strlen(buf), "(");
+      // 随机插入空格，疯狂测试你写的 make_token 健壮性
+      for (int i = 0; i < choose(3); i++) sprintf(buf + strlen(buf), " ");
+      
+      gen_rand_expr_recursive();
+      
+      for (int i = 0; i < choose(3); i++) sprintf(buf + strlen(buf), " ");
+      sprintf(buf + strlen(buf), ")");
+      break;
+
+    default: 
+      gen_rand_expr_recursive();
+      
+      // 注意：这里故意移除了除号 '/' !
+      // 因为随机生成的表达式极容易出现除以 0，这会导致 gcc 编译后的程序运行时触发 SIGFPE 崩溃，
+      // 进而导致 popen 读不到数据，中断整个测试过程。先用加减乘保证框架能跑通。
+      char op = "*-+"[choose(3)]; 
+      
+      sprintf(buf + strlen(buf), " %c ", op);
+      
+      gen_rand_expr_recursive();
+      break;
+  }
+
+  current_depth--;
+}
+
+
 static void gen_rand_expr() {
   buf[0] = '\0';
+  current_depth = 0;
+  gen_rand_expr_recursive();
 }
 
 int main(int argc, char *argv[]) {

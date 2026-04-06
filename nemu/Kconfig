@@ -214,4 +214,10 @@ config RT_CHECK
   bool "Enable runtime checking"
   default y
 
+config WATCHPOINT
+    bool "Enable watchpoint support"
+    default y
+    help
+      Enable this option to support watchpoints in the simple debugger.
+      If you care about performance, you can disable it.
 endmenu

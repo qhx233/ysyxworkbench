@@ -24,8 +24,24 @@ const char *regs[] = {
 };
 
 void isa_reg_display() {
+  for (int i = 0; i < 32; i++) {
+    printf("%s\t0x%08x\n", regs[i], cpu.gpr[i]); // regs 数组通常定义在同一个文件里
+  }
+  // 记得也把 pc 打印出来
+  printf("pc\t0x%08x\n", cpu.pc);
 }
 
 word_t isa_reg_str2val(const char *s, bool *success) {
+  for (int i = 0; i < 32; i++) {
+    if (strcmp(s, regs[i]) == 0) {
+      *success = true;
+      return cpu.gpr[i];
+    }
+  }
+  if (strcmp(s, "pc") == 0) {
+    *success = true;
+    return cpu.pc;
+  }
+  *success = false;
   return 0;
 }

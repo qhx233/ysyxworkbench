@@ -31,6 +31,8 @@ static uint64_t g_timer = 0; // unit: us
 static bool g_print_step = false;
 
 void device_update();
+bool check_watchpoints();
+
 
 static void trace_and_difftest(Decode *_this, vaddr_t dnpc) {
 #ifdef CONFIG_ITRACE_COND
@@ -38,6 +40,14 @@ static void trace_and_difftest(Decode *_this, vaddr_t dnpc) {
 #endif
   if (g_print_step) { IFDEF(CONFIG_ITRACE, puts(_this->logbuf)); }
   IFDEF(CONFIG_DIFFTEST, difftest_step(_this->pc, dnpc));
+
+#ifdef CONFIG_WATCHPOINT
+  // 调用你在 watchpoint.c 中实现的扫描函数
+  // 如果函数返回 true，说明有监视点的值发生了改变
+  if (check_watchpoints()) {
+    nemu_state.state = NEMU_STOP; // 将 NEMU 的状态设置为暂停
+  }
+#endif
 }
 
 static void exec_once(Decode *s, vaddr_t pc) {

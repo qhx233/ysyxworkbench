@@ -18,11 +18,16 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #include "sdb.h"
+#include <memory/vaddr.h>
 
 static int is_batch_mode = false;
 
 void init_regex();
 void init_wp_pool();
+void test_expr();
+bool add_watchpoint(const char *expr);
+void delete_watchpoint(int no);
+void list_watchpoints();
 
 /* We use the `readline' library to provide more flexibility to read from stdin. */
 static char* rl_gets() {
@@ -49,10 +54,94 @@ static int cmd_c(char *args) {
 
 
 static int cmd_q(char *args) {
+  nemu_state.state = NEMU_QUIT;
   return -1;
 }
 
 static int cmd_help(char *args);
+
+static int cmd_si(char *args) {
+  int steps = 1;
+  if (args != NULL) {
+     if (sscanf(args, "%d", &steps) != 1){
+        printf("Invalid argument. Usage: si [N]\n");
+        return 0;
+     };
+  }
+  cpu_exec(steps);
+  return 0;
+}
+
+static int cmd_info(char *args) {
+  if (args == NULL) {
+    printf("Usage: info [r|w]\n");
+    return 0;
+  }
+  if (strcmp(args, "r") == 0) {
+    isa_reg_display();
+  } else if (strcmp(args, "w") == 0) {
+    list_watchpoints();
+  } else {
+    printf("Unknown subcommand '%s'. Usage: info [r|w]\n", args);
+  }
+  return 0;
+}
+
+static int cmd_w(char *args) {
+  if (args == NULL) {
+    printf("Usage: w EXPR\n");
+    return 0;
+  }
+  if (add_watchpoint(args)) {
+    printf("Watchpoint added successfully.\n");
+  } else {
+    printf("Failed to add watchpoint.\n");
+  }
+  return 0;
+}
+
+static int cmd_d(char *args) {
+  if (args == NULL) {
+    printf("Usage: d NO\n");
+    return 0;
+  }
+  int no;
+  if (sscanf(args, "%d", &no) != 1) {
+    printf("Invalid argument. Usage: d NO\n");
+    return 0;
+  }
+  delete_watchpoint(no);
+  return 0;
+}
+
+static int cmd_x(char *args) {
+  int n;
+  vaddr_t addr;
+  if (args == NULL || sscanf(args, "%d %x", &n, &addr) != 2) {
+    printf("Invalid arguments. Usage: x N EXPR\n");
+    return 0;
+  }
+  for (int i = 0; i < n; i++) {
+    printf("0x%08x: 0x%08x\n", addr + i * 4, vaddr_read(addr + i * 4, 4));
+  }
+  return 0;
+}
+
+
+static int cmd_p(char *args) {
+  if (args == NULL) {
+    printf("Usage: p EXPR\n");
+    return 0;
+  }
+  bool success;
+  uint32_t result = expr(args, &success);
+  if (success) {
+    printf("Result: %u (0x%08x)\n", result, result);
+  } else {
+    printf("Failed to evaluate expression.\n");
+  }
+  return 0;
+}
 
 static struct {
   const char *name;
@@ -64,10 +153,17 @@ static struct {
   { "q", "Exit NEMU", cmd_q },
 
   /* TODO: Add more commands */
-
+  { "si", "Step one instruction exactly (or N instructions). Usage: si [N]", cmd_si },
+  { "info", "Generic command for showing things about the program being debugged. Usage: info [r|w]", cmd_info },
+  { "x", "Examine memory. Usage: x N EXPR", cmd_x },
+  { "p", "Print the value of an expression. Usage: p EXPR", cmd_p },
+  { "w", "Add a watchpoint. Usage: w EXPR", cmd_w },
+  { "d", "Delete a watchpoint. Usage: d NO", cmd_d },
 };
 
 #define NR_CMD ARRLEN(cmd_table)
+
+
 
 static int cmd_help(char *args) {
   /* extract the first argument */
@@ -140,4 +236,6 @@ void init_sdb() {
 
   /* Initialize the watchpoint pool. */
   init_wp_pool();
+
+
 }

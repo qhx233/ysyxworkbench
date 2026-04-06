@@ -64,4 +64,8 @@ sim: $(BIN_SIM)
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: default all clean run sim
+# --- 代码检查 (Lint) ---
+lint: $(VSRCS)
+	$(VERILATOR) --lint-only -Wall -Wno-DECLFILENAME $^
+
+.PHONY: default all clean run sim lint
