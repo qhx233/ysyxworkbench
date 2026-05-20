@@ -29,6 +29,7 @@ CSRCS = $(shell find $(abspath ./csrc) -maxdepth 1 -name "*.c" -or -name "*.cc" 
 CSRCS += $(SRC_AUTO_BIND)
 
 include $(NVBOARD_HOME)/scripts/nvboard.mk
+LDFLAGS += -lcapstone  -lelf -ldl
 INCFLAGS = $(addprefix -I, $(INC_PATH))
 CXXFLAGS += $(INCFLAGS) -DTOP_NAME="\"V$(TOPNAME)\""
 
@@ -37,6 +38,8 @@ $(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
 		--top-module $(TOPNAME) $^ \
 		$(addprefix -CFLAGS , $(CXXFLAGS)) $(addprefix -LDFLAGS , $(LDFLAGS)) \
+		-LDFLAGS -L/usr/lib \
+		-LDFLAGS -lcapstone \
 		--Mdir $(OBJ_DIR) --exe -o $(abspath $(BIN))
 
 # --- 纯仿真 (Sim) 相关的构建 ---

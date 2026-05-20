@@ -1,5 +1,6 @@
 #include <am.h>
 #include <klib-macros.h>
+#include <klib.h>
 
 void __am_timer_init();
 void __am_gpu_init();
@@ -17,6 +18,8 @@ void __am_audio_play(AM_AUDIO_PLAY_T *);
 void __am_disk_config(AM_DISK_CONFIG_T *cfg);
 void __am_disk_status(AM_DISK_STATUS_T *stat);
 void __am_disk_blkio(AM_DISK_BLKIO_T *io);
+void __am_gpu_memcpy(void *buf);
+void __am_gpu_render(void *buf);
 
 static void __am_timer_config(AM_TIMER_CONFIG_T *cfg) { cfg->present = true; cfg->has_rtc = true; }
 static void __am_input_config(AM_INPUT_CONFIG_T *cfg) { cfg->present = true;  }
@@ -32,6 +35,8 @@ static void *lut[128] = {
   [AM_INPUT_KEYBRD] = __am_input_keybrd,
   [AM_GPU_CONFIG  ] = __am_gpu_config,
   [AM_GPU_FBDRAW  ] = __am_gpu_fbdraw,
+  [AM_GPU_MEMCPY  ] = __am_gpu_memcpy,
+  [AM_GPU_RENDER] = __am_gpu_render,
   [AM_GPU_STATUS  ] = __am_gpu_status,
   [AM_UART_CONFIG ] = __am_uart_config,
   [AM_AUDIO_CONFIG] = __am_audio_config,
@@ -55,5 +60,9 @@ bool ioe_init() {
   return true;
 }
 
-void ioe_read (int reg, void *buf) { ((handler_t)lut[reg])(buf); }
-void ioe_write(int reg, void *buf) { ((handler_t)lut[reg])(buf); }
+void ioe_read (int reg, void *buf) { if (lut[reg] == fail) {
+    printf("\n[!!! FATAL !!!] ioe_read failed! Missing register ID: %d\n", reg);
+  }((handler_t)lut[reg])(buf); }
+void ioe_write(int reg, void *buf) { if (lut[reg] == fail) {
+    printf("\n[!!! FATAL !!!] ioe_write failed! Missing register ID: %d\n", reg);
+  }((handler_t)lut[reg])(buf); }

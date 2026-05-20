@@ -24,6 +24,33 @@
  * You can modify this value as you want.
  */
 #define MAX_INST_TO_PRINT 10
+#define IRINGBUF_SIZE 16
+
+typedef struct {
+  char logbuf[128];
+} ExtInst;
+
+static ExtInst iringbuf[IRINGBUF_SIZE];
+static int iringbuf_index = 0;
+
+void write_iringbuf(const char *str){
+  strcpy(iringbuf[iringbuf_index].logbuf, str);
+  iringbuf_index = (iringbuf_index + 1) % IRINGBUF_SIZE;
+}
+
+void print_iringbuf() {
+  puts("====== Instruction Ring Buffer ======");
+    int current = iringbuf_index;
+    for (int i = 0; i < IRINGBUF_SIZE; i++) {
+        if (iringbuf[current].logbuf[0] != '\0') {
+            // 判断是否是刚刚出错的那条指令 (即最新写入的一条)
+            bool is_fault_inst = ((current + 1) % IRINGBUF_SIZE) == iringbuf_index;
+            printf("%s %s\n", is_fault_inst ? "-->" : "   ", iringbuf[current].logbuf);
+        }
+        current = (current + 1) % IRINGBUF_SIZE;
+    }
+    puts("=====================================");
+}
 
 CPU_state cpu = {};
 uint64_t g_nr_guest_inst = 0;
@@ -78,6 +105,7 @@ static void exec_once(Decode *s, vaddr_t pc) {
   void disassemble(char *str, int size, uint64_t pc, uint8_t *code, int nbyte);
   disassemble(p, s->logbuf + sizeof(s->logbuf) - p,
       MUXDEF(CONFIG_ISA_x86, s->snpc, s->pc), (uint8_t *)&s->isa.inst, ilen);
+  write_iringbuf(s->logbuf);
 #endif
 }
 
@@ -104,6 +132,10 @@ static void statistic() {
 void assert_fail_msg() {
   isa_reg_display();
   statistic();
+
+  #ifdef CONFIG_ITRACE
+  print_iringbuf();
+  #endif
 }
 
 /* Simulate how the CPU works. */
@@ -132,6 +164,11 @@ void cpu_exec(uint64_t n) {
            (nemu_state.halt_ret == 0 ? ANSI_FMT("HIT GOOD TRAP", ANSI_FG_GREEN) :
             ANSI_FMT("HIT BAD TRAP", ANSI_FG_RED))),
           nemu_state.halt_pc);
+      if (nemu_state.state == NEMU_ABORT || nemu_state.halt_ret != 0) {
+          #ifdef CONFIG_ITRACE
+          print_iringbuf();
+          #endif
+      }
       // fall through
     case NEMU_QUIT: statistic();
   }

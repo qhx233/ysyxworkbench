@@ -1,11 +1,24 @@
 #include <am.h>
 #include <nemu.h>
 
+static uint64_t boot_time = 0;
+
+static uint64_t read_time() {
+  uint32_t hi, lo, hi_check;
+  do {
+    hi = inl(RTC_ADDR + 4);       // 读高位（触发 NEMU 刷新）
+    lo = inl(RTC_ADDR + 0);       // 读低位
+    hi_check = inl(RTC_ADDR + 4); // 再读高位
+  } while (hi != hi_check);       // 防撕裂校验
+  return ((uint64_t)hi << 32) | lo;
+}
+
 void __am_timer_init() {
+  boot_time = read_time();
 }
 
 void __am_timer_uptime(AM_TIMER_UPTIME_T *uptime) {
-  uptime->us = 0;
+  uptime->us = read_time() - boot_time;
 }
 
 void __am_timer_rtc(AM_TIMER_RTC_T *rtc) {

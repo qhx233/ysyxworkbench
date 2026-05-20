@@ -2,6 +2,8 @@
 #include <klib.h>
 #include <klib-macros.h>
 
+static char *hbrk = NULL;
+
 #if !defined(__ISA_NATIVE__) || defined(__NATIVE_USE_KLIB__)
 static unsigned long int next = 1;
 
@@ -34,7 +36,28 @@ void *malloc(size_t size) {
   // Therefore do not call panic() here, else it will yield a dead recursion:
   //   panic() -> putchar() -> (glibc) -> malloc() -> panic()
 #if !(defined(__ISA_NATIVE__) && defined(__NATIVE_USE_KLIB__))
-  panic("Not implemented");
+  if (hbrk == NULL) {
+    hbrk = (char *)heap.start;
+  }
+
+  // 2. 内存对齐：将 size 向上取整到 8 的倍数，防止地址非对齐异常
+  size = (size + 7) & ~7;
+
+  // 3. 记录当前可用地址的首地址
+  char *old_hbrk = hbrk;
+
+  // 4. 移动水位线
+  hbrk += size;
+
+  // 5. 溢出检查：如果超过了物理内存的尽头，直接宕机
+  if (hbrk > (char *)heap.end) {
+    panic("Heap out of memory!");
+  }
+
+  // 6. 返回分配好的内存地址
+  return old_hbrk;
+
+
 #endif
   return NULL;
 }

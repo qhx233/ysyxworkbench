@@ -72,6 +72,12 @@ static inline void update_screen() {
 #endif
 
 void vga_update_screen() {
+  #ifdef CONFIG_VGA_SHOW_SCREEN
+  if (vgactl_port_base[1] != 0) {
+    update_screen();         // 触发底层 SDL 渲染，更新真实屏幕
+    vgactl_port_base[1] = 0; // 清零同步寄存器，完成本次握手
+  }
+  #endif
   // TODO: call `update_screen()` when the sync register is non-zero,
   // then zero out the sync register
 }

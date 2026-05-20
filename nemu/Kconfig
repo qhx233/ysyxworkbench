@@ -151,6 +151,13 @@ config ITRACE_COND
   string "Only trace instructions when the condition is true"
   default "true"
 
+config DTRACE
+    bool "Enable device access tracing (dtrace)"
+    default n
+    help
+      Log all device I/O access (read and write) to help debug 
+      interaction between software and hardware devices.
+
 
 config DIFFTEST
   depends on TARGET_NATIVE_ELF
@@ -220,4 +227,10 @@ config WATCHPOINT
     help
       Enable this option to support watchpoints in the simple debugger.
       If you care about performance, you can disable it.
+
+config FTRACE
+    bool "Enable function trace (ftrace)"
+    default y
+    help
+      Enable tracing of function calls and returns (jal/jalr) using ELF symbol table.
 endmenu
