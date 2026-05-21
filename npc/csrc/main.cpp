@@ -27,8 +27,8 @@ uint8_t mem[MEM_SIZE];
 
 #define ENABLE_ITRACE 0
 #define ENABLE_MTRACE 0
-#define ENABLE_FTRACE 1
-#define ENABLE_DIFFTEST 1 // 开关
+#define ENABLE_FTRACE 0
+#define ENABLE_DIFFTEST 1// 开关
 
 // 类型补全
 typedef uint32_t paddr_t;
@@ -43,7 +43,7 @@ typedef struct {
 } Symbol;
 
 struct diff_context_t {
-    uint32_t gpr[32];
+    uint32_t gpr[16];
     uint32_t pc;
 };
 void (*ref_difftest_memcpy)(paddr_t addr, void *buf, size_t n, bool direction) = NULL;
@@ -190,7 +190,7 @@ void init_difftest(const char *ref_so_file, long img_size) {
 }
 void checkregs(diff_context_t * ref) {
     bool mismatch = false;
-    for(int i = 0; i < 32; i++){
+    for(int i = 0; i < 16; i++){
         
             if(npc_read_gpr(i) != ref->gpr[i]) {
                 mismatch = true;
@@ -321,7 +321,7 @@ void isa_reg_display(){
         "s8", "s9", "s10","s11","t3","t4","t5","t6"
     };
     printf("------------------NPC Registers------------------\n");
-    for(int i=0; i<32; i++){
+    for(int i=0; i<16; i++){
         uint32_t val = (uint32_t)npc_read_gpr(i);
       printf("%-4s: 0x%08x\t%-10d\n", regs[i], val, val);
     }

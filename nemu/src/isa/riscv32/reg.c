@@ -24,7 +24,7 @@ const char *regs[] = {
 };
 
 void isa_reg_display() {
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < 16; i++) {
     printf("%s\t0x%08x\n", regs[i], cpu.gpr[i]); // regs 数组通常定义在同一个文件里
   }
   // 记得也把 pc 打印出来
@@ -32,7 +32,7 @@ void isa_reg_display() {
 }
 
 word_t isa_reg_str2val(const char *s, bool *success) {
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < 16; i++) {
     if (strcmp(s, regs[i]) == 0) {
       *success = true;
       return cpu.gpr[i];
