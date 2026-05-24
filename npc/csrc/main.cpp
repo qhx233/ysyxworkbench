@@ -16,6 +16,9 @@
 #include <dlfcn.h>
 
 extern "C" int npc_read_gpr(int idx);
+extern "C" uint32_t npc_read_pc();
+
+bool is_skip_ref = false;
 
 static Vexample dut;
 #define MEM_SIZE 0x4000000
@@ -45,6 +48,7 @@ typedef struct {
 struct diff_context_t {
     uint32_t gpr[16];
     uint32_t pc;
+    uint32_t csr[4];
 };
 void (*ref_difftest_memcpy)(paddr_t addr, void *buf, size_t n, bool direction) = NULL;
 void (*ref_difftest_regcpy)(void *dut, bool direction) = NULL;
@@ -180,11 +184,19 @@ void init_difftest(const char *ref_so_file, long img_size) {
     ref_difftest_exec = (void (*)(uint64_t))dlsym(handle, "difftest_exec");
     ref_difftest_init = (void (*)(int))dlsym(handle, "difftest_init");
     assert(ref_difftest_memcpy && ref_difftest_regcpy && ref_difftest_exec && ref_difftest_init);
+    svSetScope(svGetScopeFromName("TOP.example"));
     ref_difftest_init(0);
     ref_difftest_memcpy(MEM_BASE, mem, img_size, DIFFTEST_TO_REF);
-    diff_context_t ctx = {0};
+    diff_context_t ctx ;
+    ref_difftest_regcpy(&ctx, DIFFTEST_TO_DUT); 
+    // 2. 只修改我们需要对齐的 PC 和通用寄存器
     ctx.pc = MEM_BASE;
+    for(int i = 0; i < 16; i++) {
+        ctx.gpr[i] = npc_read_gpr(i); // 对齐硬件的初始 GPR
+    }
+    // 3. 原封不动地把包含 0x1800 的 CSR 连同新 PC 一起写回 NEMU
     ref_difftest_regcpy(&ctx, DIFFTEST_TO_REF);
+   
     printf("DiffTest initialized with %s\n", ref_so_file);
 #endif
 }
@@ -266,10 +278,12 @@ void load_img(char *img_file) {
 
 extern "C" int pmem_read(int raddr) {
     if(raddr == RTC_ADDR){
+        is_skip_ref = true;
         uint64_t us = get_time_internal() - boot_time;
         return (uint32_t)us;
     }
     if(raddr == RTC_ADDR + 4){
+        is_skip_ref = true;
         uint64_t us = get_time_internal() - boot_time;
         return (uint32_t)(us >> 32);
     }
@@ -293,6 +307,7 @@ extern "C" void pmem_write(int waddr, int wdata, char wmask) {
    if(waddr == SERIAL_PORT){
     putchar((char)wdata & 0xFF);
     fflush(stdout);
+    is_skip_ref = true;
     return;
    }
 
@@ -349,10 +364,25 @@ void cpu_exec(uint64_t n){
         single_cycle();
 #if ENABLE_DIFFTEST
    if(ref_difftest_exec) {
-    diff_context_t ref_ctx;
-    ref_difftest_exec(1); // 让参考模型执行一条指令
-    ref_difftest_regcpy(&ref_ctx, DIFFTEST_TO_DUT); // 从参考模型复制寄存器状态到 DUT
-    checkregs(&ref_ctx); // 检查寄存器状态是否匹配
+    if (is_skip_ref) {
+                // 如果访问了设备，强制把 NPC 的状态（寄存器+PC）复制给 NEMU
+
+                diff_context_t sync_ctx;
+                ref_difftest_regcpy(&sync_ctx, DIFFTEST_TO_DUT);
+                for(int i = 0; i < 16; i++) { // RV32E 是 16 个
+                    sync_ctx.gpr[i] = npc_read_gpr(i);
+                }
+                sync_ctx.pc = npc_read_pc(); // 拿到 NPC 的当前 PC
+                
+                ref_difftest_regcpy(&sync_ctx, DIFFTEST_TO_REF); // TO_REF!
+                is_skip_ref = false; // 用完重置
+            } else {
+                // 正常执行
+                diff_context_t ref_ctx;
+                ref_difftest_exec(1); 
+                ref_difftest_regcpy(&ref_ctx, DIFFTEST_TO_DUT); 
+                checkregs(&ref_ctx); 
+            }
    }
 #endif
     }

@@ -21,6 +21,7 @@
 typedef struct {
   word_t gpr[MUXDEF(CONFIG_RVE, 16, 32)];
   vaddr_t pc;
+  word_t mepc,  mcause,mstatus, mtvec; // 机器模式下的异常处理相关寄存器
 } MUXDEF(CONFIG_RV64, riscv64_CPU_state, riscv32_CPU_state);
 
 // decode

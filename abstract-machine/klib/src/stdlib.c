@@ -2,10 +2,11 @@
 #include <klib.h>
 #include <klib-macros.h>
 
-static char *hbrk = NULL;
 
 #if !defined(__ISA_NATIVE__) || defined(__NATIVE_USE_KLIB__)
 static unsigned long int next = 1;
+
+static char *hbrk = NULL;
 
 int rand(void) {
   // RAND_MAX assumed to be 32767

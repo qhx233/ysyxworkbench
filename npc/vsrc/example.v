@@ -168,6 +168,7 @@ module example(
     import "DPI-C" function void pmem_write(input int waddr, input int wdata, input byte wmask);
     import "DPI-C" function int  pmem_read(input int raddr);
     import "DPI-C" function void npc_itrace_commit(input int pc, input int inst, input int dnpc);
+    //import "DPI-C" function void npc_read_pc(output int pc);
 
     //===========================================================================
     // IFU (Instruction Fetch Unit)
@@ -189,14 +190,12 @@ module example(
     wire [4:0] rs2_idx = inst[24:20];
     wire [4:0] rd_idx  = inst[11:7];
 
-    // 立即数提取 (RV32 所有的立即数格式)
     wire [31:0] imm_I = {{20{inst[31]}}, inst[31:20]};
     wire [31:0] imm_S = {{20{inst[31]}}, inst[31:25], inst[11:7]};
     wire [31:0] imm_B = {{20{inst[31]}}, inst[7], inst[30:25], inst[11:8], 1'b0};
     wire [31:0] imm_U = {inst[31:12], 12'b0};
     wire [31:0] imm_J = {{12{inst[31]}}, inst[19:12], inst[20], inst[30:21], 1'b0};
 
-    // 指令类型解码
     wire op_lui    = (opcode == 7'b0110111);
     wire op_auipc  = (opcode == 7'b0010111);
     wire op_jal    = (opcode == 7'b1101111);
@@ -206,28 +205,45 @@ module example(
     wire op_store  = (opcode == 7'b0100011);
     wire op_imm    = (opcode == 7'b0010011);
     wire op_reg    = (opcode == 7'b0110011);
+    wire op_system = (opcode == 7'b1110011); 
+    
     wire is_ebreak = (inst == 32'h00100073);
+    wire [11:0] csr_addr = inst[31:20];               
+
+    // --- 新增：异常与系统指令解码 ---
+    wire is_ecall = op_system && (funct3 == 3'b000) && (csr_addr == 12'b0000_0000_0000);
+    wire is_mret  = op_system && (funct3 == 3'b000) && (csr_addr == 12'b0011_0000_0010);
+    
+    wire is_csr   = op_system && (funct3 != 3'b000); // 只要 funct3 不是 0 就是 CSR 指令
+    wire is_csrrw = is_csr && (funct3 == 3'b001);
+    wire is_csrrs = is_csr && (funct3 == 3'b010);
 
     //===========================================================================
-    // EXU (Execution Unit - Branch & ALU)
+    // EXU (Execution Unit) & PC Update
     //===========================================================================
-    // --- 1. 分支判断逻辑 (Branch Unit) ---
     wire alu_eq  = (rs1_data == rs2_data);
     wire alu_lt  = ($signed(rs1_data) < $signed(rs2_data));
     wire alu_ltu = (rs1_data < rs2_data);
 
     wire branch_taken = op_branch && (
-        (funct3 == 3'b000 &&  alu_eq) || // BEQ
-        (funct3 == 3'b001 && !alu_eq) || // BNE
-        (funct3 == 3'b100 &&  alu_lt) || // BLT
-        (funct3 == 3'b101 && !alu_lt) || // BGE
-        (funct3 == 3'b110 &&  alu_ltu)|| // BLTU
-        (funct3 == 3'b111 && !alu_ltu)   // BGEU
+        (funct3 == 3'b000 &&  alu_eq) || 
+        (funct3 == 3'b001 && !alu_eq) || 
+        (funct3 == 3'b100 &&  alu_lt) || 
+        (funct3 == 3'b101 && !alu_lt) || 
+        (funct3 == 3'b110 &&  alu_ltu)|| 
+        (funct3 == 3'b111 && !alu_ltu)   
     );
 
-    // --- 2. PC 更新逻辑 ---
     wire [31:0] snpc = pc + 32'h4;
-    wire [31:0] dnpc = (op_jal)       ? (pc + imm_J) :
+    
+    // --- 核心修改：时空跳转，接入异常入口(mtvec)与返回出口(mepc) ---
+    // 为了解决编译时在定义前使用的警告，我们需要把 mtvec 和 mepc 提前声明
+    wire [31:0] csr_mtvec; 
+    wire [31:0] csr_mepc;
+
+    wire [31:0] dnpc = (is_ecall)     ? csr_mtvec :              // 遇到 ecall，跳到自陷入口
+                       (is_mret)      ? csr_mepc :               // 遇到 mret，跳回断点
+                       (op_jal)       ? (pc + imm_J) :
                        (op_jalr)      ? ((rs1_data + imm_I) & ~32'h1) :
                        (branch_taken) ? (pc + imm_B) : 
                        snpc;
@@ -237,14 +253,11 @@ module example(
         else     pc <= dnpc;
     end
 
-    // --- 3. ALU 控制逻辑 ---
-    // ALU 操作码设计：[3] 区分加/减或右移的逻辑/算数, [2:0] 完美对应 funct3
     wire is_sub = (op_reg && funct7[5]) || op_branch; 
     wire is_sra = (funct7[5] && (op_reg || op_imm) && funct3 == 3'b101);
     wire [3:0] alu_op = (op_lui || op_auipc || op_jal || op_load || op_store) ? 4'b0000 : 
                         { (is_sub || is_sra), funct3 };
 
-    // --- 4. ALU 输入多路选择器 ---
     wire [31:0] alu_src1 = (op_auipc) ? pc :
                            (op_lui)   ? 32'b0 : 
                            rs1_data;
@@ -269,7 +282,6 @@ module example(
         else                 raw_rdata = 32'h0;
     end
 
-    // 读取对齐处理 (LB, LH, LW, LBU, LHU)
     wire [7:0] byte_data = (mem_offset == 2'b00) ? raw_rdata[7:0]   :
                            (mem_offset == 2'b01) ? raw_rdata[15:8]  :
                            (mem_offset == 2'b10) ? raw_rdata[23:16] : raw_rdata[31:24];
@@ -277,36 +289,98 @@ module example(
     wire [15:0] half_data = (mem_offset[1] == 1'b0) ? raw_rdata[15:0] : raw_rdata[31:16];
 
     wire [31:0] mem_rdata = 
-        (funct3 == 3'b000) ? {{24{byte_data[7]}}, byte_data}   : // LB
-        (funct3 == 3'b001) ? {{16{half_data[15]}}, half_data}  : // LH
-        (funct3 == 3'b010) ? raw_rdata                         : // LW
-        (funct3 == 3'b100) ? {24'b0, byte_data}                : // LBU
-        (funct3 == 3'b101) ? {16'b0, half_data}                : // LHU
+        (funct3 == 3'b000) ? {{24{byte_data[7]}}, byte_data}   : 
+        (funct3 == 3'b001) ? {{16{half_data[15]}}, half_data}  : 
+        (funct3 == 3'b010) ? raw_rdata                         : 
+        (funct3 == 3'b100) ? {24'b0, byte_data}                : 
+        (funct3 == 3'b101) ? {16'b0, half_data}                : 
         32'b0;
 
-    // 写入对齐与掩码处理 (SB, SH, SW)
     wire [7:0] wmask = 
-        (funct3 == 3'b000) ? (8'b0000_0001 << mem_offset) : // SB
-        (funct3 == 3'b001) ? (8'b0000_0011 << mem_offset) : // SH
-        (funct3 == 3'b010) ? 8'b0000_1111                 : // SW
+        (funct3 == 3'b000) ? (8'b0000_0001 << mem_offset) : 
+        (funct3 == 3'b001) ? (8'b0000_0011 << mem_offset) : 
+        (funct3 == 3'b010) ? 8'b0000_1111                 : 
         8'b0;
 
     wire [31:0] wdata = 
-        (funct3 == 3'b000) ? {4{rs2_data[7:0]}}  : // SB
-        (funct3 == 3'b001) ? {2{rs2_data[15:0]}} : // SH
-        rs2_data;                                  // SW
+        (funct3 == 3'b000) ? {4{rs2_data[7:0]}}  : 
+        (funct3 == 3'b001) ? {2{rs2_data[15:0]}} : 
+        rs2_data;                                  
 
     always @(posedge clk) begin
         if (mem_wen && !rst) pmem_write(mem_addr, wdata, wmask);
     end
 
     //===========================================================================
+    // CSR Unit (Trap & Registers)
+    //===========================================================================
+    reg [63:0] mcycle_counter;
+    always @(posedge clk) begin
+        if (rst) mcycle_counter <= 64'b0;
+        else     mcycle_counter <= mcycle_counter + 64'b1;
+    end
+
+    // --- 新增：核心异常寄存器 ---
+    reg [31:0] mstatus; // 0x300
+    reg [31:0] mtvec;   // 0x305
+    reg [31:0] mepc;    // 0x341
+    reg [31:0] mcause;  // 0x342
+
+    assign csr_mtvec = mtvec;
+    assign csr_mepc  = mepc;
+
+    // --- 新增：CSR 写逻辑与异常现场保护 ---
+    wire csr_wen = (is_csrrw) || (is_csrrs && rs1_idx != 0);
+    
+    // CSRRS 的语义：读取旧值，旧值写回 rd，新值 = 旧值 | rs1
+    wire [31:0] csr_rdata_internal;
+    wire [31:0] csr_wdata = (is_csrrw) ? rs1_data :
+                            (is_csrrs) ? (csr_rdata_internal | rs1_data) :
+                            32'b0;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            mstatus <= 32'h1800; // 极其重要：过 DiffTest 的关键，初始化 M-Mode MPP(位12:11) = 2'b11
+            mtvec   <= 32'b0;
+            mepc    <= 32'b0;
+            mcause  <= 32'b0;
+        end 
+        // 1. 硬件自陷：遇到 ecall，自动保存现场
+        else if (is_ecall) begin
+            mepc   <= pc;        // 保存发生 ecall 的 PC
+            mcause <= 32'd11;    // RISC-V 规定：Environment call from M-mode 的异常号是 11
+        end 
+        // 2. 软件写入：处理 csrrw, csrrs (RT-Thread 初始化环境时会用到)
+        else if (csr_wen) begin
+             if      (csr_addr == 12'h300) mstatus <= csr_wdata;
+            else if (csr_addr == 12'h305) mtvec   <= csr_wdata;
+            else if (csr_addr == 12'h341) mepc    <= csr_wdata;
+            else if (csr_addr == 12'h342) mcause  <= csr_wdata;
+        end
+    end
+
+    // --- CSR 读多路选择器 ---
+    assign csr_rdata_internal = 
+        (csr_addr == 12'h300) ? mstatus :
+        (csr_addr == 12'h305) ? mtvec   :
+        (csr_addr == 12'h341) ? mepc    :
+        (csr_addr == 12'h342) ? mcause  :
+        (csr_addr == 12'hB00) ? mcycle_counter[31:0]  : 
+        (csr_addr == 12'hB80) ? mcycle_counter[63:32] : 
+        (csr_addr == 12'hF11) ? 32'h79737978          : // mvendorid
+        (csr_addr == 12'hF12) ? 32'd100022721         : // marchid
+        32'b0;
+
+    //===========================================================================
     // WBU (Write Back Unit)
     //===========================================================================
-    wire rf_wen = (op_lui || op_auipc || op_jal || op_jalr || op_load || op_imm || op_reg);
-    wire [31:0] rf_wdata = (op_jal || op_jalr) ? snpc :
-                           (op_load)           ? mem_rdata : 
-                           alu_result; // LUI, AUIPC, OP-IMM, OP 都在 ALU 里算好了
+    // 扩展 rf_wen 包含所有 CSR 指令 (读出的值都需要写回目的寄存器)
+    wire rf_wen = (op_lui || op_auipc || op_jal || op_jalr || op_load || op_imm || op_reg || is_csr);
+    
+    wire [31:0] rf_wdata = (is_csr)            ? csr_rdata_internal :
+                           (op_jal || op_jalr) ? snpc               :
+                           (op_load)           ? mem_rdata          : 
+                           alu_result; 
 
     //===========================================================================
     // 实例化与追踪
@@ -328,6 +402,11 @@ module example(
     function int npc_read_gpr(input int idx);
         return u_regfile.rf[idx];
     endfunction
+
+    export "DPI-C" function npc_read_pc;
+function int npc_read_pc;
+    return pc; 
+endfunction
 
     alu u_alu (
         .src1(alu_src1),

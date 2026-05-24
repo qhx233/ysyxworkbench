@@ -70,6 +70,12 @@ static inline void check_ftrace(paddr_t pc, paddr_t dnpc, int rd, int rs1, int i
 #endif
 }
 
+static inline void print_etrace_mret(vaddr_t mepc) {
+#ifdef CONFIG_ETRACE
+    Log("etrace: [mret] Return to PC = 0x%08x", mepc);
+#endif
+}
+
 static int decode_exec(Decode *s) {
   s->dnpc = s->snpc;
 
@@ -84,6 +90,45 @@ static int decode_exec(Decode *s) {
   INSTPAT_START();
   // --- 系统指令 ---
   INSTPAT("0000000 00001 00000 000 00000 11100 11", ebreak , N, NEMUTRAP(s->pc, R(10)));
+  // 【新增】ecall: 触发异常，陷入操作系统 (Machine Mode 异常号为 11)
+  INSTPAT("0000000 00000 00000 000 00000 11100 11", ecall  , N, s->dnpc = isa_raise_intr(11, s->pc));
+  
+  // 【新增】mret: 从异常中返回，恢复 PC 为 mepc 的值
+  INSTPAT("0011000 00010 00000 000 00000 11100 11", mret   , N, s->dnpc = cpu.mepc,  print_etrace_mret(cpu.mepc));
+
+  // 【新增】csrrw (Write): 将 src1 写入 CSR，并将旧的 CSR 值读出到 rd
+  // (AM 中的 csrw 伪指令就是基于它实现的: csrrw x0, csr, rs)
+  INSTPAT("??????? ????? ????? 001 ????? 11100 11", csrrw  , I, {
+      word_t csr_idx = BITS(s->isa.inst, 31, 20); // 从指令中提取 12 位的 CSR 地址
+      word_t t = 0;
+      switch (csr_idx) {
+          case 0x300: t = cpu.mstatus; cpu.mstatus = src1; break;
+          case 0x305: t = cpu.mtvec;   cpu.mtvec = src1; break;
+          case 0x341: t = cpu.mepc;    cpu.mepc = src1; break;
+          case 0x342: t = cpu.mcause;  cpu.mcause = src1; break;
+          case 0xf11: t = 0x79737978;  break; // mvendorid (ysyx)
+          case 0xf12: t = 100022721;   break; // marchid (你的学号)
+          default: panic("Unsupported CSR 0x%x at pc = 0x%08x", csr_idx, s->pc);
+      }
+      R(rd) = t;
+  });
+
+  // 【新增】csrrs (Read and Set): 读出 CSR 到 rd，并将 CSR 的某位置 1 
+  // (AM 中的 csrr 伪指令就是基于它实现的: csrrs rd, csr, x0)
+  INSTPAT("??????? ????? ????? 010 ????? 11100 11", csrrs  , I, {
+      word_t csr_idx = BITS(s->isa.inst, 31, 20);
+      word_t t = 0;
+      switch (csr_idx) {
+          case 0x300: t = cpu.mstatus; cpu.mstatus |= src1; break;
+          case 0x305: t = cpu.mtvec;   cpu.mtvec |= src1; break;
+          case 0x341: t = cpu.mepc;    cpu.mepc |= src1; break;
+          case 0x342: t = cpu.mcause;  cpu.mcause |= src1; break;
+          case 0xf11: t = 0x79737978;  break; // mvendorid
+          case 0xf12: t = 100022721;   break; // marchid
+          default: panic("Unsupported CSR 0x%x at pc = 0x%08x", csr_idx, s->pc);
+      }
+      R(rd) = t;
+  });
 
   // --- 寄存器/立即数计算 (I-type) ---
   INSTPAT("??????? ????? ????? 000 ????? 00100 11", addi   , I, R(rd) = src1 + imm);

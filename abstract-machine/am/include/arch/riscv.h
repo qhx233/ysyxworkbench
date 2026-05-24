@@ -9,7 +9,15 @@
 
 struct Context {
   // TODO: fix the order of these members to match trap.S
-  uintptr_t mepc, mcause, gpr[NR_REGS], mstatus;
+  uintptr_t gpr[NR_REGS];
+
+  // 接下来是偏移量为 NR_REGS * XLEN 的地方
+  uintptr_t mcause;   // OFFSET_CAUSE
+  uintptr_t mstatus;  // OFFSET_STATUS
+  uintptr_t mepc;     // OFFSET_EPC
+
+  // 最后的 pdir 占位（根据代码，如果你在汇编里没存 pdir，
+  // 也可以把 pdir 放在 gpr[0] 的位置，这取决于 PA4 的具体实现）
   void *pdir;
 };
 
