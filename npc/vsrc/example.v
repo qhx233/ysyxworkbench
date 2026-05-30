@@ -360,6 +360,8 @@ module example(
     end
 
 endmodule*/
+
+
 module example(
     input  wire        clk,
     input  wire        rst,
@@ -397,52 +399,63 @@ module example(
     reg [1:0] state;
 
     //===========================================================================
-    // 2. 取指阶段 (IFU) 声明与内存模拟
+    // 2. 双路 AXI4-Lite 接口声明 (Master 视角)
     //===========================================================================
-    wire ifu_reqValid  = (state == ST_IF_REQ);
-    wire ifu_respReady = (state == ST_IF_RSP);
-
-    reg ifu_busy;
-    reg [3:0] ifu_delay;
-    reg [31:0] ifu_rdata_reg;
-    reg ifu_respValid_reg;
+    // --- IFU 接口 (指令抓取) ---
+    wire        ifu_arvalid;
+    wire        ifu_arready;
+    wire [31:0] ifu_araddr;
+    wire        ifu_rvalid;
+    wire        ifu_rready;
+    wire [31:0] ifu_rdata;
     
-    wire ifu_reqReady  = !ifu_busy && lfsr[1]; // 随机 Ready
-    wire ifu_respValid = ifu_respValid_reg;
-    wire [31:0] ifu_rdata = ifu_rdata_reg;
+    // IFU 严格遵循只读约束，强行将写通道置零
+    wire        ifu_awvalid = 1'b0;
+    wire [31:0] ifu_awaddr  = 32'b0;
+    wire        ifu_wvalid  = 1'b0;
+    wire [31:0] ifu_wdata   = 32'b0;
+    wire [3:0]  ifu_wstrb   = 4'b0;
+    wire        ifu_bready  = 1'b0;
 
-    always @(posedge clk) begin
-        if (rst) begin
-            ifu_busy <= 1'b0; ifu_delay <= 4'b0; ifu_respValid_reg <= 1'b0;
-        end else begin
-            ifu_respValid_reg <= 1'b0;
-            if (ifu_reqValid && ifu_reqReady) begin
-                ifu_busy  <= 1'b1;
-                ifu_delay <= lfsr[5:2]; 
-            end else if (ifu_busy) begin
-                if (ifu_delay == 4'b0) begin
-                    ifu_busy <= 1'b0; ifu_respValid_reg <= 1'b1;
-                    ifu_rdata_reg <= pmem_read(pc);
-                end else if (lfsr[6]) begin 
-                    ifu_delay <= ifu_delay - 1'b1;
-                end
-            end
-        end
-    end
+    // --- LSU 接口 (数据访存) ---
+    wire        lsu_arvalid;
+    wire        lsu_arready;
+    wire [31:0] lsu_araddr;
+    wire        lsu_rvalid;
+    wire        lsu_rready;
+    wire [31:0] lsu_rdata;
 
-    wire ifu_hsk_req = ifu_reqValid && ifu_reqReady;
-    wire ifu_hsk_rsp = ifu_respValid && ifu_respReady;
+    wire        lsu_awvalid;
+    wire        lsu_awready;
+    wire [31:0] lsu_awaddr;
+    wire        lsu_wvalid;
+    wire        lsu_wready;
+    wire [31:0] lsu_wdata;
+    wire [3:0]  lsu_wstrb;
+    wire        lsu_bvalid;
+    wire        lsu_bready;
 
+    // 握手成功标志
+    wire ifu_hsk_ar = ifu_arvalid && ifu_arready;
+    wire ifu_hsk_r  = ifu_rvalid  && ifu_rready;
+    
+    wire lsu_hsk_ar = lsu_arvalid && lsu_arready;
+    wire lsu_hsk_r  = lsu_rvalid  && lsu_rready;
+    wire lsu_hsk_aw = lsu_awvalid && lsu_awready;
+    wire lsu_hsk_w  = lsu_wvalid  && lsu_wready;
+    wire lsu_hsk_b  = lsu_bvalid  && lsu_bready;
+
+    //===========================================================================
+    // 3. 译码与指令锁存
+    //===========================================================================
     reg [31:0] inst_reg;
     always @(posedge clk) begin
-        if (rst)              inst_reg <= 32'h00000013;
-        else if (ifu_hsk_rsp) inst_reg <= ifu_rdata;
+        if (rst)               inst_reg <= 32'h00000013; // NOP
+        else if (ifu_hsk_r)    inst_reg <= ifu_rdata;
     end
-    wire [31:0] inst = (ifu_hsk_rsp) ? ifu_rdata : inst_reg;
+    
+    wire [31:0] inst = (state == ST_IF_RSP && ifu_hsk_r) ? ifu_rdata : inst_reg;
 
-    //===========================================================================
-    // 3. 译码前置 (Decode)
-    //===========================================================================
     wire [6:0] opcode = inst[6:0];
     wire [2:0] funct3 = inst[14:12];
     wire [6:0] funct7 = inst[31:25];
@@ -451,47 +464,76 @@ module example(
     wire op_store = (opcode == 7'b0100011);
     wire is_mem_inst = op_load || op_store;
 
-    wire lsu_ren = op_load;
-    wire lsu_wen = op_store;
+    wire [31:0] mem_addr   = alu_result & ~32'h3; 
+    wire [1:0]  mem_offset = alu_result[1:0];
+    wire [7:0] wmask = (funct3 == 3'b000) ? (8'b0000_0001 << mem_offset) : 
+                       (funct3 == 3'b001) ? (8'b0000_0011 << mem_offset) : 
+                       (funct3 == 3'b010) ? 8'b0000_1111 : 8'b0;
+    wire [31:0] wdata = (funct3 == 3'b000) ? {4{rs2_data[7:0]}}  : 
+                        (funct3 == 3'b001) ? {2{rs2_data[15:0]}} : rs2_data; 
 
     //===========================================================================
-    // 4. 访存阶段 (LSU) 声明与内存模拟
+    // 4. 核心状态机与并发写通道握手记录
     //===========================================================================
-    wire lsu_reqValid  = (state == ST_MEM_REQ);
-    wire lsu_respReady = (state == ST_MEM_RSP);
-
-    reg lsu_busy;
-    reg [3:0] lsu_delay;
-    reg [31:0] lsu_rdata_reg;
-    reg lsu_respValid_reg;
-
-    wire lsu_reqReady  = !lsu_busy && lfsr[7];
-    wire lsu_respValid = lsu_respValid_reg;
-    wire [31:0] lsu_rdata = lsu_rdata_reg;
-
-    wire lsu_hsk_req = lsu_reqValid && lsu_reqReady;
-    wire lsu_hsk_rsp = lsu_respValid && lsu_respReady;
-
-    //===========================================================================
-    // 5. 状态机跳转与流水线 Stall
-    //===========================================================================
+    reg aw_done, w_done;
+    
     always @(posedge clk) begin
         if (rst) begin
             state <= ST_IF_REQ;
+            aw_done <= 1'b0; w_done <= 1'b0;
         end else begin
             case (state)
-                ST_IF_REQ:  if (ifu_hsk_req) state <= ST_IF_RSP;
-                ST_IF_RSP:  if (ifu_hsk_rsp) state <= is_mem_inst ? ST_MEM_REQ : ST_IF_REQ;
-                ST_MEM_REQ: if (lsu_hsk_req) state <= ST_MEM_RSP;
-                ST_MEM_RSP: if (lsu_hsk_rsp) state <= ST_IF_REQ;
-                default:    state <= ST_IF_REQ;
+                ST_IF_REQ: begin
+                    if (ifu_hsk_ar) state <= ST_IF_RSP;
+                end
+                ST_IF_RSP: begin
+                    if (ifu_hsk_r) state <= is_mem_inst ? ST_MEM_REQ : ST_IF_REQ;
+                end
+                ST_MEM_REQ: begin
+                    if (op_load) begin
+                        if (lsu_hsk_ar) state <= ST_MEM_RSP;
+                    end else if (op_store) begin
+                        // 独立记录写地址和写数据的并发握手情况
+                        if (lsu_hsk_aw) aw_done <= 1'b1;
+                        if (lsu_hsk_w)  w_done  <= 1'b1;
+                        if ((aw_done || lsu_hsk_aw) && (w_done || lsu_hsk_w)) begin
+                            state   <= ST_MEM_RSP;
+                            aw_done <= 1'b0; w_done  <= 1'b0;
+                        end
+                    end
+                end
+                ST_MEM_RSP: begin
+                    if (op_load && lsu_hsk_r) state <= ST_IF_REQ;
+                    if (op_store && lsu_hsk_b) state <= ST_IF_REQ;
+                end
+                default: state <= ST_IF_REQ;
             endcase
         end
     end
 
-    wire commit_non_mem = (state == ST_IF_RSP)  && ifu_hsk_rsp && !is_mem_inst;
-    wire commit_mem     = (state == ST_MEM_RSP) && lsu_hsk_rsp;
+    // 流水线 Stall 逻辑
+    wire commit_non_mem = (state == ST_IF_RSP)  && ifu_hsk_r && !is_mem_inst;
+    wire commit_mem     = (state == ST_MEM_RSP) && (op_load ? lsu_hsk_r : lsu_hsk_b);
     wire stall = !(commit_non_mem || commit_mem);
+
+    //===========================================================================
+    // 5. AXI4-Lite Master 信号驱动 (严格符合握手铁律)
+    //===========================================================================
+    assign ifu_arvalid = (state == ST_IF_REQ);
+    assign ifu_araddr  = pc;
+    assign ifu_rready  = (state == ST_IF_RSP);
+
+    assign lsu_arvalid = (state == ST_MEM_REQ) && op_load;
+    assign lsu_araddr  = mem_addr;
+    assign lsu_rready  = (state == ST_MEM_RSP) && op_load;
+
+    // 写请求的 Valid 信号在当前周期尚未完成握手时一直保持为高
+    assign lsu_awvalid = (state == ST_MEM_REQ) && op_store && !aw_done;
+    assign lsu_awaddr  = mem_addr;
+    assign lsu_wvalid  = (state == ST_MEM_REQ) && op_store && !w_done;
+    assign lsu_wdata   = wdata;
+    assign lsu_wstrb   = wmask[3:0];
+    assign lsu_bready  = (state == ST_MEM_RSP) && op_store;
 
     //===========================================================================
     // 6. 执行单元 (EXU) 
@@ -551,38 +593,102 @@ module example(
     alu u_alu (.src1(alu_src1), .src2(alu_src2), .alu_op(alu_op), .result(alu_result)); 
 
     //===========================================================================
-    // 7. LSU 地址与数据逻辑提取
+    // 7. AXI4-Lite 双端口模拟内存 (Slave 端) - 包含随机延迟
     //===========================================================================
-    wire [31:0] lsu_addr   = alu_result & ~32'h3; 
-    wire [1:0]  mem_offset = alu_result[1:0];
+    
+    // --- IFU 存储器通道模拟 ---
+    reg ifu_ar_busy;
+    reg [3:0] ifu_ar_delay;
+    reg [31:0] ifu_rdata_reg;
+    reg ifu_rvalid_reg;
 
-    wire [7:0] wmask = (funct3 == 3'b000) ? (8'b0000_0001 << mem_offset) : 
-                       (funct3 == 3'b001) ? (8'b0000_0011 << mem_offset) : 
-                       (funct3 == 3'b010) ? 8'b0000_1111 : 8'b0;
-    wire [31:0] wdata = (funct3 == 3'b000) ? {4{rs2_data[7:0]}}  : 
-                        (funct3 == 3'b001) ? {2{rs2_data[15:0]}} : rs2_data; 
+    assign ifu_arready = !ifu_ar_busy && lfsr[1];
+    assign ifu_rvalid  = ifu_rvalid_reg;
+    assign ifu_rdata   = ifu_rdata_reg;
 
-    // LSU 响应内存的具体动作
     always @(posedge clk) begin
         if (rst) begin
-            lsu_busy <= 1'b0; lsu_delay <= 4'b0; lsu_respValid_reg <= 1'b0;
+            ifu_ar_busy <= 1'b0; ifu_ar_delay <= 4'b0; ifu_rvalid_reg <= 1'b0;
         end else begin
-            lsu_respValid_reg <= 1'b0;
-            if (lsu_reqValid && lsu_reqReady) begin
-                lsu_busy  <= 1'b1;
-                lsu_delay <= lfsr[11:8]; 
-            end else if (lsu_busy) begin
-                if (lsu_delay == 4'b0) begin
-                    lsu_busy <= 1'b0; lsu_respValid_reg <= 1'b1;
-                    if (lsu_ren) lsu_rdata_reg <= pmem_read(lsu_addr);
-                    if (lsu_wen) pmem_write(lsu_addr, wdata, wmask);
-                end else if (lfsr[12]) begin
-                    lsu_delay <= lsu_delay - 1'b1;
+            if (ifu_hsk_ar) begin
+                ifu_ar_busy  <= 1'b1;
+                ifu_ar_delay <= lfsr[3:0]; 
+            end else if (ifu_ar_busy) begin
+                if (ifu_ar_delay == 0) begin
+                    ifu_ar_busy <= 1'b0;
+                    ifu_rvalid_reg <= 1'b1;
+                    ifu_rdata_reg <= pmem_read(ifu_araddr);
+                end else begin
+                    ifu_ar_delay <= ifu_ar_delay - 1'b1;
                 end
+            end else if (ifu_hsk_r) begin
+                ifu_rvalid_reg <= 1'b0;
             end
         end
     end
 
+    // --- LSU 存储器通道模拟 ---
+    // LSU Read Channel
+    reg lsu_ar_busy;
+    reg [3:0] lsu_ar_delay;
+    reg [31:0] lsu_rdata_reg;
+    reg lsu_rvalid_reg;
+
+    assign lsu_arready = !lsu_ar_busy && lfsr[4];
+    assign lsu_rvalid  = lsu_rvalid_reg;
+    assign lsu_rdata   = lsu_rdata_reg;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            lsu_ar_busy <= 1'b0; lsu_ar_delay <= 4'b0; lsu_rvalid_reg <= 1'b0;
+        end else begin
+            if (lsu_hsk_ar) begin
+                lsu_ar_busy  <= 1'b1;
+                lsu_ar_delay <= lfsr[7:4];
+            end else if (lsu_ar_busy) begin
+                if (lsu_ar_delay == 0) begin
+                    lsu_ar_busy <= 1'b0;
+                    lsu_rvalid_reg <= 1'b1;
+                    lsu_rdata_reg <= pmem_read(lsu_araddr);
+                end else begin
+                    lsu_ar_delay <= lsu_ar_delay - 1'b1;
+                end
+            end else if (lsu_hsk_r) begin
+                lsu_rvalid_reg <= 1'b0;
+            end
+        end
+    end
+
+    // LSU Write Channel
+    reg lsu_aw_busy, lsu_w_busy;
+    reg [31:0] mem_write_addr_reg;
+    reg [31:0] mem_write_data_reg;
+    reg [3:0]  mem_write_strb_reg;
+    reg lsu_bvalid_reg;
+
+    assign lsu_awready = !lsu_aw_busy && lfsr[8];
+    assign lsu_wready  = !lsu_w_busy  && lfsr[9];
+    assign lsu_bvalid  = lsu_bvalid_reg;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            lsu_aw_busy <= 1'b0; lsu_w_busy <= 1'b0; lsu_bvalid_reg <= 1'b0;
+        end else begin
+            if (lsu_hsk_aw) begin lsu_aw_busy <= 1'b1; mem_write_addr_reg <= lsu_awaddr; end
+            if (lsu_hsk_w)  begin lsu_w_busy  <= 1'b1; mem_write_data_reg <= lsu_wdata; mem_write_strb_reg <= lsu_wstrb; end
+            
+            // 两路数据都齐了，且尚未发出过 B 响应信号时，执行写入
+            if (lsu_aw_busy && lsu_w_busy && !lsu_bvalid_reg) begin
+                pmem_write(mem_write_addr_reg, mem_write_data_reg, {4'b0, mem_write_strb_reg});
+                lsu_bvalid_reg <= 1'b1;
+            end else if (lsu_hsk_b) begin
+                // B 响应被接受，事务彻底结束
+                lsu_aw_busy <= 1'b0; lsu_w_busy <= 1'b0; lsu_bvalid_reg <= 1'b0;
+            end
+        end
+    end
+
+    // Load 数据符号扩展截取
     wire [7:0] byte_data = (mem_offset == 2'b00) ? lsu_rdata[7:0]   :
                            (mem_offset == 2'b01) ? lsu_rdata[15:8]  :
                            (mem_offset == 2'b10) ? lsu_rdata[23:16] : lsu_rdata[31:24];
@@ -593,11 +699,10 @@ module example(
         (funct3 == 3'b001) ? {{16{half_data[15]}}, half_data}  : 
         (funct3 == 3'b010) ? lsu_rdata                         : 
         (funct3 == 3'b100) ? {24'b0, byte_data}                : 
-        (funct3 == 3'b101) ? {16'b0, half_data}                : 
-        32'b0;
+        (funct3 == 3'b101) ? {16'b0, half_data}                : 32'b0;
 
     //===========================================================================
-    // 8. CSR / 控制与状态寄存器
+    // 8. CSR 与 WBU 控制逻辑
     //===========================================================================
     wire is_csr   = op_system && (funct3 != 3'b000); 
     wire is_csrrw = is_csr && (funct3 == 3'b001);
@@ -641,17 +746,11 @@ module example(
         (csr_addr == 12'hF11) ? 32'h79737978          : 
         (csr_addr == 12'hF12) ? 32'd100022721         : 32'b0;
 
-    //===========================================================================
-    // 9. 写回逻辑 (WBU)
-    //===========================================================================
     wire rf_wen = (op_lui || op_auipc || op_jal || op_jalr || op_load || op_imm || op_reg || is_csr);
     wire [31:0] rf_wdata = (is_csr)            ? csr_rdata_internal :
                            (op_jal || op_jalr) ? snpc               :
                            (op_load)           ? mem_rdata          : alu_result; 
 
-    //===========================================================================
-    // 10. 寄存器堆实例化
-    //===========================================================================
     regfile u_regfile (
         .clk(clk), .rst(rst), 
         .wen(rf_wen && !stall), 
@@ -661,7 +760,7 @@ module example(
     );
 
     //===========================================================================
-    // 11. DPI-C 输出跟踪
+    // 9. C++ 接口暴露
     //===========================================================================
     export "DPI-C" function npc_read_gpr;
     function int npc_read_gpr(input int idx); return u_regfile.rf[idx]; endfunction
