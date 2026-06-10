@@ -506,6 +506,14 @@ static VysyxSoCFull dut;
 #define MROM_SIZE 0x1000 
 uint8_t mrom[MROM_SIZE];
 #define MROM_BASE 0x20000000
+#define SRAM_BASE 0x0f000000
+#define SRAM_SIZE 0x2000
+#define FLASH_BASE 0x30000000
+#define FLASH_SIZE 0x1000000
+uint8_t sram[SRAM_SIZE];
+uint8_t flash[FLASH_SIZE];
+static long img_size_loaded = 0;
+static const char *ref_so_file = "/home/vboxuser/clip/ysyx-workbench/nemu/build/riscv32-nemu-interpreter-so";
 
 #define ENABLE_ITRACE 0
 #define ENABLE_MTRACE 0
@@ -688,8 +696,10 @@ void init_difftest(const char *ref_so_file, long img_size) {
     svSetScope(get_dpi_scope());
     
     ref_difftest_init(0);
-    // 现在将镜像拷贝到 MROM 基地址，以供 DiffTest 使用
+    memset(sram, 0, sizeof(sram));
     ref_difftest_memcpy(MROM_BASE, mrom, img_size, DIFFTEST_TO_REF);
+    ref_difftest_memcpy(SRAM_BASE, sram, sizeof(sram), DIFFTEST_TO_REF);
+
     diff_context_t ctx ;
     ref_difftest_regcpy(&ctx, DIFFTEST_TO_DUT); 
     ctx.pc = MROM_BASE;
@@ -748,14 +758,13 @@ extern "C" void npc_trap(int a0_val) {
 void load_img(char *img_file) {
     if (img_file == NULL) {
         printf("警告: 未提供 bin 文件路径！将使用默认的内置测试程序。\n");
-        // 如果没有提供 bin 文件，我们在 MROM 中放一条跳转到自身的死循环指令
         uint32_t built_in_prog[] = {
             0x0000006f // j pc
         };
         memcpy(mrom, built_in_prog, sizeof(built_in_prog));
+        img_size_loaded = sizeof(built_in_prog);
         return;
     }
-    char *so_file  = "/home/vboxuser/clip/ysyx-workbench/nemu/build/riscv32-nemu-interpreter-so";
     FILE *fp = fopen(img_file, "rb");
     assert(fp != NULL); 
     
@@ -772,9 +781,22 @@ void load_img(char *img_file) {
     size_t ret = fread(mrom, size, 1, fp);
     assert(ret == 1);
     fclose(fp);
-    init_difftest(so_file, size);
+    img_size_loaded = size;
 
     printf("成功加载镜像: %s, 大小: %ld bytes (已烧录至 MROM)\n", img_file, size);
+}
+
+static uint32_t flash_pattern(uint32_t addr) {
+    uint32_t word_addr = addr & ~0x3u;
+    return 0x5a000000u ^ (word_addr * 0x01010101u) ^ (word_addr << 8);
+}
+
+void init_flash() {
+    memset(flash, 0xff, sizeof(flash));
+    for (uint32_t addr = 0; addr < 0x1000; addr += sizeof(uint32_t)) {
+        uint32_t data = flash_pattern(addr);
+        memcpy(flash + addr, &data, sizeof(data));
+    }
 }
 
 // =======================================================================
@@ -794,16 +816,36 @@ extern "C" void mrom_read(int32_t addr, int32_t *data) {
 
 // 这几个函数保持原样，防止后续遇到未定义引用
 extern "C" void flash_read(int32_t addr, int32_t *data) { 
-    assert(0); 
+    uint32_t uaddr = (uint32_t)addr;
+    if (uaddr + sizeof(uint32_t) <= FLASH_SIZE) {
+        memcpy(data, flash + uaddr, sizeof(uint32_t));
+    } else {
+        printf("\n\033[1;31m[ERROR] 越界读取 FLASH 地址: 0x%08x\033[0m\n", FLASH_BASE + uaddr);
+        *data = 0;
+    }
 }
 
 extern "C" int pmem_read(int raddr) {
+    uint32_t uaddr = (uint32_t)raddr;
+    if (uaddr >= SRAM_BASE && uaddr + sizeof(uint32_t) <= SRAM_BASE + SRAM_SIZE) {
+        return *(uint32_t *)(sram + uaddr - SRAM_BASE);
+    }
     is_skip_ref = true;
-    return 0; 
+    return 0;
 }
 
 extern "C" void pmem_write(int waddr, int wdata, char wmask) {
-   is_skip_ref = true;
+    uint32_t uaddr = (uint32_t)waddr;
+    if (uaddr >= SRAM_BASE && uaddr + sizeof(uint32_t) <= SRAM_BASE + SRAM_SIZE) {
+        uint32_t offset = uaddr - SRAM_BASE;
+        for (int i = 0; i < 4; i++) {
+            if ((wmask >> i) & 0x1) {
+                sram[offset + i] = (wdata >> (i * 8)) & 0xff;
+            }
+        }
+        return;
+    }
+    is_skip_ref = true;
 }
 
 extern "C" int npc_read_gpr(int idx);
@@ -827,7 +869,12 @@ void scan_memory(int n, uint32_t base_addr){
     printf("Scanning memory from 0x%08x:\n", base_addr);
     for(int i=0; i<n; i++){
         uint32_t addr = base_addr + i*4;
-        uint32_t val = pmem_read(addr); // 注意，如果你想看 MROM，这里要改成调用 mrom 数组
+        uint32_t val = 0;
+        if (addr >= MROM_BASE && addr + sizeof(uint32_t) <= MROM_BASE + MROM_SIZE) {
+            val = *(uint32_t *)(mrom + addr - MROM_BASE);
+        } else {
+            val = pmem_read(addr);
+        }
         printf("0x%08x: 0x%08x\n", addr, val);
     }
 }
@@ -934,11 +981,13 @@ int main(int argc, char** argv) {
   }
 
   load_img(img_file);
+  init_flash();
 
   init_disasm();
   init_elf(elf_file);
   
   reset(10);
+  init_difftest(ref_so_file, img_size_loaded);
   if (batch_mode) {
       printf("\033[1;36m[NPC] 运行在 Batch 模式 (自动执行)...\033[0m\n");
       cpu_exec(-1); 

@@ -1,16 +1,24 @@
 #include <am.h>
 #include <klib-macros.h>
 
-// ysyxSoC 的 UART16550 发送寄存器物理地址
-#define SERIAL_PORT 0x10000000L
+#define UART_BASE 0x10000000L
+#define UART_TX   0
+#define UART_IER  1
+#define UART_FCR  2
+#define UART_LCR  3
+#define UART_LSR  5
+#define UART_LSR_THRE 0x20
 
-// 引入我们在 linker.ld 中定义的堆区范围
 extern char _heap_start;
 extern char _heap_end;
+extern char _data_load_start;
+extern char _data_start;
+extern char _data_end;
+extern char _bss_start;
+extern char _bss_end;
 
 int main(const char *args);
 
-// ysyxSoC 的堆区必须严格限制在 SRAM 内
 Area heap = RANGE(&_heap_start, &_heap_end);
 
 // 处理 mainargs 传参 (兼容 klib 宏)
@@ -19,9 +27,26 @@ Area heap = RANGE(&_heap_start, &_heap_end);
 #endif
 static const char mainargs[] = TOSTRING(MAINARGS_PLACEHOLDER);
 
+static inline void outb(uintptr_t addr, uint8_t data) {
+  *(volatile uint8_t *)addr = data;
+}
+
+static inline uint8_t inb(uintptr_t addr) {
+  return *(volatile uint8_t *)addr;
+}
+
+static void uart_init() {
+  outb(UART_BASE + UART_IER, 0x00);
+  outb(UART_BASE + UART_LCR, 0x80);
+  outb(UART_BASE + 0, 0x01);
+  outb(UART_BASE + 1, 0x00);
+  outb(UART_BASE + UART_LCR, 0x03);
+  outb(UART_BASE + UART_FCR, 0x07);
+}
+
 void putch(char ch) {
-  // 向串口发送字符
-  *(volatile uint8_t *)SERIAL_PORT = ch;
+  while ((inb(UART_BASE + UART_LSR) & UART_LSR_THRE) == 0);
+  outb(UART_BASE + UART_TX, ch);
 }
 
 void halt(int code) {
@@ -32,8 +57,17 @@ void halt(int code) {
 }
 
 void _trm_init() {
-  // 跳转到 C 语言的 main 函数，并传入参数
+  char *src = &_data_load_start;
+  char *dst = &_data_start;
+  while (dst < &_data_end) {
+    *dst++ = *src++;
+  }
+
+  for (char *p = &_bss_start; p < &_bss_end; p++) {
+    *p = 0;
+  }
+
+  uart_init();
   int ret = main(mainargs);
-  // 程序结束，将 main 的返回值传给 halt
   halt(ret);
 }

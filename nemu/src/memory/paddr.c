@@ -24,32 +24,39 @@ static uint8_t *pmem = NULL;
 static uint8_t pmem[CONFIG_MSIZE] PG_ALIGN = {};
 #endif
 
-#define MROM_BASE 0x20000000
-#define MROM_SIZE 0x1000
-#define SRAM_BASE 0x0f000000
-#define SRAM_SIZE 0x2000
+#define MROM_BASE 0x20000000u
+#define MROM_SIZE 0x1000u
+#define SRAM_BASE 0x0f000000u
+#define SRAM_SIZE 0x2000u
 
 static uint8_t mrom[MROM_SIZE] PG_ALIGN = {};
 static uint8_t sram[SRAM_SIZE] PG_ALIGN = {};
 
+static inline bool in_range(paddr_t addr, paddr_t base, paddr_t size) {
+  return addr - base < size;
+}
+
 static inline bool in_mrom(paddr_t addr) {
-  return (addr >= MROM_BASE) && (addr < MROM_BASE + MROM_SIZE);
+  return in_range(addr, MROM_BASE, MROM_SIZE);
 }
 
 static inline bool in_sram(paddr_t addr) {
-  return (addr >= SRAM_BASE) && (addr < SRAM_BASE + SRAM_SIZE);
+  return in_range(addr, SRAM_BASE, SRAM_SIZE);
 }
 
 uint8_t* guest_to_host(paddr_t paddr) {
-  if (likely(in_pmem(paddr))) return pmem + paddr - CONFIG_MBASE; 
+  if (likely(in_pmem(paddr))) return pmem + paddr - CONFIG_MBASE;
   if (in_mrom(paddr)) return mrom + paddr - MROM_BASE;
   if (in_sram(paddr)) return sram + paddr - SRAM_BASE;
-  return pmem + paddr - CONFIG_MBASE; // fallback
-  }
-paddr_t host_to_guest(uint8_t *haddr) {if (haddr >= pmem && haddr < pmem + CONFIG_MSIZE) return haddr - pmem + CONFIG_MBASE;
+  panic("address = " FMT_PADDR " can not be converted to host address", paddr);
+}
+
+paddr_t host_to_guest(uint8_t *haddr) {
+  if (haddr >= pmem && haddr < pmem + CONFIG_MSIZE) return haddr - pmem + CONFIG_MBASE;
   if (haddr >= mrom && haddr < mrom + MROM_SIZE) return haddr - mrom + MROM_BASE;
   if (haddr >= sram && haddr < sram + SRAM_SIZE) return haddr - sram + SRAM_BASE;
-  return haddr - pmem + CONFIG_MBASE; }
+  panic("host address %p can not be converted to guest address", haddr);
+}
 
 static word_t pmem_read(paddr_t addr, int len) {
   word_t ret = host_read(guest_to_host(addr), len);
@@ -72,6 +79,8 @@ void init_mem() {
 #endif
   IFDEF(CONFIG_MEM_RANDOM, memset(pmem, rand(), CONFIG_MSIZE));
   Log("physical memory area [" FMT_PADDR ", " FMT_PADDR "]", PMEM_LEFT, PMEM_RIGHT);
+  Log("mrom area [0x%08x, 0x%08x]", MROM_BASE, MROM_BASE + MROM_SIZE - 1);
+  Log("sram area [0x%08x, 0x%08x]", SRAM_BASE, SRAM_BASE + SRAM_SIZE - 1);
 }
 
 word_t paddr_read(paddr_t addr, int len) {

@@ -1,32 +1,40 @@
 ENTRY(_start)
 
+MEMORY {
+  mrom (rx)  : ORIGIN = 0x20000000, LENGTH = 4K
+  sram (rwx) : ORIGIN = 0x0f000000, LENGTH = 8K
+}
+
 SECTIONS {
-  /* 1. MROM 空间：存放所有的代码和初始数据，基址 0x20000000 */
-  . = 0x20000000;
-  
   .text : {
-    *(entry)     /* 确保 start.S 里的 _start 在最开头 */
+    *(entry)
     *(.text*)
-  }
-  
+  } > mrom AT> mrom
+
   .rodata : {
     *(.rodata*)
-  }
-  
+    *(.srodata*)
+  } > mrom AT> mrom
+
   .data : {
+    _data_start = .;
     *(.data*)
-  }
-  
-  .bss : {
+    *(.sdata*)
+    _data_end = .;
+  } > sram AT> mrom
+  _data_load_start = LOADADDR(.data);
+
+  .bss (NOLOAD) : {
+    _bss_start = .;
     *(.bss*)
     *(.sbss*)
-  }
+    *(COMMON)
+    _bss_end = .;
+  } > sram
 
-  /* 2. SRAM 空间：给 C 语言运行时的栈和堆使用 (0x0f000000 ~ 0x0f001fff) */
-  /* 栈向下生长，所以栈顶设在 8KB SRAM 的最高处 */
-  _stack_top = 0x0f002000;  
-  
-  /* 剩下给堆区留点位置，以满足 TRM 的 API 要求 */
-  _heap_start = 0x0f000000; 
-  _heap_end = 0x0f001000;   /* 给栈预留 4KB 空间 */
+  . = ALIGN(4);
+  _heap_start = .;
+  _stack_bottom = ORIGIN(sram) + LENGTH(sram) - 0x1000;
+  _stack_top = ORIGIN(sram) + LENGTH(sram);
+  _heap_end = _stack_bottom;
 }

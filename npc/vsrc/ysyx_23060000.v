@@ -516,13 +516,13 @@ module ysyx_23060000(
     // --- 1. Master 闲置信号绑定 ---
     assign io_master_awid    = 4'd0;
     assign io_master_awlen   = 8'd0;
-    assign io_master_awsize  = 3'b010; // 4 Bytes
+    assign io_master_awsize  = mem_axi_size;
     assign io_master_awburst = 2'b00;
     assign io_master_wlast   = 1'b1;   // 单拍传输必须拉高
 
     assign io_master_arid    = 4'd0;
     assign io_master_arlen   = 8'd0;
-    assign io_master_arsize  = 3'b010; 
+    assign io_master_arsize  = ((state == ST_MEM_REQ) && op_load) ? mem_axi_size : 3'b010;
     assign io_master_arburst = 2'b00;
 
     // --- 2. Slave 信号全部锁死赋 0 (修复 PINNOTFOUND 报错) ---
@@ -579,9 +579,14 @@ module ysyx_23060000(
     wire [6:0] opcode = inst[6:0]; wire [2:0] funct3 = inst[14:12]; wire [6:0] funct7 = inst[31:25];
     wire op_load = (opcode == 7'b0000011), op_store = (opcode == 7'b0100011);
     wire is_mem_inst = op_load || op_store;
+    wire [2:0] mem_axi_size = (funct3[1:0] == 2'b00) ? 3'b000 :
+                              (funct3[1:0] == 2'b01) ? 3'b001 : 3'b010;
 
     wire [31:0] rs1_data, rs2_data, alu_result, a0_val;
-    wire [31:0] mem_addr   = alu_result & ~32'h3; 
+    wire in_uart = (alu_result[31:12] == 20'h10000);
+    wire in_flash = (alu_result[31:28] == 4'h3);
+    wire [31:0] mem_addr   = alu_result & ~32'h3;
+    wire [31:0] bus_addr   = in_uart ? alu_result : mem_addr;
     wire [1:0]  mem_offset = alu_result[1:0];
     
     wire [7:0] wmask = (funct3 == 3'b000) ? (8'b0000_0001 << mem_offset) : 
@@ -621,8 +626,8 @@ module ysyx_23060000(
     wire stall = !(commit_non_mem || commit_mem);
 
     assign ifu_arvalid = (state == ST_IF_REQ); assign ifu_araddr  = pc; assign ifu_rready  = (state == ST_IF_RSP);
-    assign lsu_arvalid = (state == ST_MEM_REQ) && op_load; assign lsu_araddr  = mem_addr; assign lsu_rready  = (state == ST_MEM_RSP) && op_load;
-    assign lsu_awvalid = (state == ST_MEM_REQ) && op_store && !aw_done; assign lsu_awaddr  = mem_addr;
+    assign lsu_arvalid = (state == ST_MEM_REQ) && op_load; assign lsu_araddr  = bus_addr; assign lsu_rready  = (state == ST_MEM_RSP) && op_load;
+    assign lsu_awvalid = (state == ST_MEM_REQ) && op_store && !aw_done; assign lsu_awaddr  = bus_addr;
     assign lsu_wvalid  = (state == ST_MEM_REQ) && op_store && !w_done; assign lsu_wdata   = wdata; assign lsu_wstrb   = wmask[3:0];
     assign lsu_bready  = (state == ST_MEM_RSP) && op_store;
 
@@ -648,7 +653,16 @@ module ysyx_23060000(
     wire [31:0] dnpc = (is_ecall) ? csr_mtvec : (is_mret) ? csr_mepc : (op_jal) ? (pc + imm_J) :
                        (op_jalr) ? ((rs1_data + imm_I) & ~32'h1) : (branch_taken) ? (pc + imm_B) : snpc;
 
-    always @(posedge clk) begin if (rst) pc <= 32'h20000000; else if (!stall) pc <= dnpc; end
+    wire axi_read_fault = io_master_rvalid && io_master_rready && (io_master_rresp != 2'b00);
+    wire axi_write_fault = io_master_bvalid && io_master_bready && (io_master_bresp != 2'b00);
+    wire access_fault = axi_read_fault || axi_write_fault;
+    wire [31:0] access_fault_cause = axi_write_fault ? 32'd7 : op_load ? 32'd5 : 32'd1;
+
+    always @(posedge clk) begin
+        if (rst) pc <= 32'h20000000;
+        else if (access_fault) pc <= 32'h0;
+        else if (!stall) pc <= dnpc;
+    end
 
     wire is_sub = (op_reg && funct7[5]) || op_branch; wire is_sra = (funct7[5] && (op_reg || op_imm) && funct3 == 3'b101);
     wire [3:0] alu_op = (op_lui || op_auipc || op_jal || op_load || op_store) ? 4'b0000 : { (is_sub || is_sra), funct3 };
@@ -751,7 +765,10 @@ module ysyx_23060000(
 
     always @(posedge clk) begin
         if (rst) begin mstatus <= 32'h1800; mtvec <= 32'b0; mepc <= 32'b0; mcause <= 32'b0; end 
-        else if (!stall) begin
+        else if (access_fault) begin
+            mepc <= pc;
+            mcause <= access_fault_cause;
+        end else if (!stall) begin
             if (is_ecall) begin mepc <= pc; mcause <= 32'd11; end 
             else if (csr_wen) begin
                  if      (csr_addr == 12'h300) mstatus <= csr_wdata;
@@ -769,8 +786,7 @@ module ysyx_23060000(
                                 (csr_addr == 12'hF11) ? 32'h79737978 : (csr_addr == 12'hF12) ? 32'd100022721 : 32'b0;
 
     // MMIO 防打扰机制（DiffTest）
-    wire in_uart = (mem_addr == 32'h1000_0000);
-    wire is_mmio = is_mem_inst && in_uart;//(mem_addr[31:27] != 5'b10000);
+    wire is_mmio = is_mem_inst && (in_uart || in_flash);
     wire is_skip_csr = is_csr && (
         csr_addr == 12'hB00 || csr_addr == 12'hC00 || csr_addr == 12'hC01 || 
         csr_addr == 12'hB80 || csr_addr == 12'hC80 || csr_addr == 12'hC81 ||
@@ -789,7 +805,7 @@ module ysyx_23060000(
     wire rf_wen = (op_lui || op_auipc || op_jal || op_jalr || op_load || op_imm || op_reg || is_csr);
     wire [31:0] rf_wdata = (is_csr) ? csr_rdata_internal : (op_jal || op_jalr) ? snpc : (op_load) ? ext_mem_rdata : alu_result; 
 
-    regfile u_regfile (.clk(clk), .rst(rst), .wen(rf_wen && !stall), .waddr(rd_idx), .wdata(rf_wdata), .raddr1(rs1_idx), .raddr2(rs2_idx), .rdata1(rs1_data), .rdata2(rs2_data), .a0_val(a0_val));
+    regfile u_regfile (.clk(clk), .rst(rst), .wen(rf_wen && !stall && !access_fault), .waddr(rd_idx), .wdata(rf_wdata), .raddr1(rs1_idx), .raddr2(rs2_idx), .rdata1(rs1_data), .rdata2(rs2_data), .a0_val(a0_val));
 
     export "DPI-C" function npc_read_gpr; function int npc_read_gpr(input int idx); return u_regfile.rf[idx]; endfunction
     export "DPI-C" function npc_read_pc;  function int npc_read_pc; return pc; endfunction
