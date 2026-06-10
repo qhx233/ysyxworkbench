@@ -24,8 +24,32 @@ static uint8_t *pmem = NULL;
 static uint8_t pmem[CONFIG_MSIZE] PG_ALIGN = {};
 #endif
 
-uint8_t* guest_to_host(paddr_t paddr) { return pmem + paddr - CONFIG_MBASE; }
-paddr_t host_to_guest(uint8_t *haddr) { return haddr - pmem + CONFIG_MBASE; }
+#define MROM_BASE 0x20000000
+#define MROM_SIZE 0x1000
+#define SRAM_BASE 0x0f000000
+#define SRAM_SIZE 0x2000
+
+static uint8_t mrom[MROM_SIZE] PG_ALIGN = {};
+static uint8_t sram[SRAM_SIZE] PG_ALIGN = {};
+
+static inline bool in_mrom(paddr_t addr) {
+  return (addr >= MROM_BASE) && (addr < MROM_BASE + MROM_SIZE);
+}
+
+static inline bool in_sram(paddr_t addr) {
+  return (addr >= SRAM_BASE) && (addr < SRAM_BASE + SRAM_SIZE);
+}
+
+uint8_t* guest_to_host(paddr_t paddr) {
+  if (likely(in_pmem(paddr))) return pmem + paddr - CONFIG_MBASE; 
+  if (in_mrom(paddr)) return mrom + paddr - MROM_BASE;
+  if (in_sram(paddr)) return sram + paddr - SRAM_BASE;
+  return pmem + paddr - CONFIG_MBASE; // fallback
+  }
+paddr_t host_to_guest(uint8_t *haddr) {if (haddr >= pmem && haddr < pmem + CONFIG_MSIZE) return haddr - pmem + CONFIG_MBASE;
+  if (haddr >= mrom && haddr < mrom + MROM_SIZE) return haddr - mrom + MROM_BASE;
+  if (haddr >= sram && haddr < sram + SRAM_SIZE) return haddr - sram + SRAM_BASE;
+  return haddr - pmem + CONFIG_MBASE; }
 
 static word_t pmem_read(paddr_t addr, int len) {
   word_t ret = host_read(guest_to_host(addr), len);
@@ -51,10 +75,10 @@ void init_mem() {
 }
 
 word_t paddr_read(paddr_t addr, int len) {
-  if (likely(in_pmem(addr))) {
+  if (likely(in_pmem(addr)) || in_mrom(addr) || in_sram(addr)) {
     word_t data = pmem_read(addr, len);
   #ifdef CONFIG_MTRACE
-   if (addr >= CONFIG_MTRACE_START_ADDR && addr <= CONFIG_MTRACE_END_ADDR) {
+    if (addr >= CONFIG_MTRACE_START_ADDR && addr <= CONFIG_MTRACE_END_ADDR) {
       Log("Read  | addr: " FMT_PADDR " | len: %d | data: " FMT_WORD, addr, len, data);
     }
   #endif
@@ -66,7 +90,12 @@ word_t paddr_read(paddr_t addr, int len) {
 }
 
 void paddr_write(paddr_t addr, int len, word_t data) {
-  if (likely(in_pmem(addr))) { pmem_write(addr, len, data); 
+ /*if (unlikely(in_mrom(addr))) {
+    panic("NEMU Assertion failed: CPU trying to write to MROM at " FMT_PADDR " at pc = " FMT_WORD, addr, cpu.pc);
+  }*/
+
+  if (likely(in_pmem(addr)) || in_sram(addr)) { 
+    pmem_write(addr, len, data); 
 #ifdef CONFIG_MTRACE
     if (addr >= CONFIG_MTRACE_START_ADDR && addr <= CONFIG_MTRACE_END_ADDR) {
       Log("Write | addr: " FMT_PADDR " | len: %d | data: " FMT_WORD, addr, len, data);
