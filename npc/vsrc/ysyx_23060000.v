@@ -55,8 +55,9 @@ module example(
     wire [7:0] wmask = (funct3 == 3'b000) ? (8'b0000_0001 << mem_offset) : 
                        (funct3 == 3'b001) ? (8'b0000_0011 << mem_offset) : 
                        (funct3 == 3'b010) ? 8'b0000_1111 : 8'b0;
-    wire [31:0] wdata = (funct3 == 3'b000) ? {4{rs2_data[7:0]}}  : 
-                        (funct3 == 3'b001) ? {2{rs2_data[15:0]}} : rs2_data; 
+    wire [31:0] store_data_raw = (funct3 == 3'b000) ? {24'b0, rs2_data[7:0]}  :
+                                 (funct3 == 3'b001) ? {16'b0, rs2_data[15:0]} : rs2_data;
+    wire [31:0] wdata = store_data_raw << {mem_offset, 3'b000};
 
     reg aw_done, w_done;
     always @(posedge clk) begin
@@ -545,6 +546,7 @@ module ysyx_23060000(
     // =================================================================
     import "DPI-C" function void npc_trap(input int a0_val);
     import "DPI-C" function void npc_itrace_commit(input int pc, input int inst, input int dnpc);
+    import "DPI-C" function int npc_reset_pc();
 
     reg [31:0] pc; 
     localparam ST_IF_REQ = 2'b00, ST_IF_RSP = 2'b01, ST_MEM_REQ = 2'b10, ST_MEM_RSP = 2'b11;
@@ -584,16 +586,21 @@ module ysyx_23060000(
 
     wire [31:0] rs1_data, rs2_data, alu_result, a0_val;
     wire in_uart = (alu_result[31:12] == 20'h10000);
+    wire in_spi = (alu_result[31:12] == 20'h10001);
     wire in_flash = (alu_result[31:28] == 4'h3);
+    wire in_clint = (alu_result[31:24] == 8'h02);
+    wire in_psram = (alu_result[31:29] == 3'b100);
+    wire in_sdram = (alu_result[31:29] == 3'b101);
     wire [31:0] mem_addr   = alu_result & ~32'h3;
-    wire [31:0] bus_addr   = in_uart ? alu_result : mem_addr;
+    wire [31:0] bus_addr   = (in_uart || in_spi || in_psram) ? alu_result : mem_addr;
     wire [1:0]  mem_offset = alu_result[1:0];
     
     wire [7:0] wmask = (funct3 == 3'b000) ? (8'b0000_0001 << mem_offset) : 
                        (funct3 == 3'b001) ? (8'b0000_0011 << mem_offset) : 
                        (funct3 == 3'b010) ? 8'b0000_1111 : 8'b0;
-    wire [31:0] wdata = (funct3 == 3'b000) ? {4{rs2_data[7:0]}}  : 
-                        (funct3 == 3'b001) ? {2{rs2_data[15:0]}} : rs2_data; 
+    wire [31:0] store_data_raw = (funct3 == 3'b000) ? {24'b0, rs2_data[7:0]}  :
+                                 (funct3 == 3'b001) ? {16'b0, rs2_data[15:0]} : rs2_data;
+    wire [31:0] wdata = store_data_raw << {mem_offset, 3'b000};
 
     reg aw_done, w_done;
     always @(posedge clk) begin
@@ -659,7 +666,7 @@ module ysyx_23060000(
     wire [31:0] access_fault_cause = axi_write_fault ? 32'd7 : op_load ? 32'd5 : 32'd1;
 
     always @(posedge clk) begin
-        if (rst) pc <= 32'h20000000;
+        if (rst) pc <= npc_reset_pc();
         else if (access_fault) pc <= 32'h0;
         else if (!stall) pc <= dnpc;
     end
@@ -706,8 +713,8 @@ module ysyx_23060000(
     // =======================================================================
     // 地址分发器 (Xbar): 决定去内部 CLINT 还是去外部 ysyxSoCFull
     // =======================================================================
-    wire sel_clint = (arb_araddr[31:24] == 8'h02) || (arb_araddr[31:24] == 8'ha0);
-    wire sel_clint_w = (arb_awaddr[31:24] == 8'h02) || (arb_awaddr[31:24] == 8'ha0);
+    wire sel_clint = (arb_araddr[31:24] == 8'h02);
+    wire sel_clint_w = (arb_awaddr[31:24] == 8'h02);
     
     wire sel_ext   = !sel_clint;
     wire sel_ext_w = !sel_clint_w;
@@ -786,7 +793,7 @@ module ysyx_23060000(
                                 (csr_addr == 12'hF11) ? 32'h79737978 : (csr_addr == 12'hF12) ? 32'd100022721 : 32'b0;
 
     // MMIO 防打扰机制（DiffTest）
-    wire is_mmio = is_mem_inst && (in_uart || in_flash);
+    wire is_mmio = is_mem_inst && (in_uart || in_spi || in_flash || in_clint || in_sdram);
     wire is_skip_csr = is_csr && (
         csr_addr == 12'hB00 || csr_addr == 12'hC00 || csr_addr == 12'hC01 || 
         csr_addr == 12'hB80 || csr_addr == 12'hC80 || csr_addr == 12'hC81 ||

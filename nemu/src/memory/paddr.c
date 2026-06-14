@@ -28,9 +28,12 @@ static uint8_t pmem[CONFIG_MSIZE] PG_ALIGN = {};
 #define MROM_SIZE 0x1000u
 #define SRAM_BASE 0x0f000000u
 #define SRAM_SIZE 0x2000u
+#define FLASH_BASE 0x30000000u
+#define FLASH_SIZE 0x1000000u
 
 static uint8_t mrom[MROM_SIZE] PG_ALIGN = {};
 static uint8_t sram[SRAM_SIZE] PG_ALIGN = {};
+static uint8_t flash[FLASH_SIZE] PG_ALIGN = {};
 
 static inline bool in_range(paddr_t addr, paddr_t base, paddr_t size) {
   return addr - base < size;
@@ -44,10 +47,15 @@ static inline bool in_sram(paddr_t addr) {
   return in_range(addr, SRAM_BASE, SRAM_SIZE);
 }
 
+static inline bool in_flash(paddr_t addr) {
+  return in_range(addr, FLASH_BASE, FLASH_SIZE);
+}
+
 uint8_t* guest_to_host(paddr_t paddr) {
   if (likely(in_pmem(paddr))) return pmem + paddr - CONFIG_MBASE;
   if (in_mrom(paddr)) return mrom + paddr - MROM_BASE;
   if (in_sram(paddr)) return sram + paddr - SRAM_BASE;
+  if (in_flash(paddr)) return flash + paddr - FLASH_BASE;
   panic("address = " FMT_PADDR " can not be converted to host address", paddr);
 }
 
@@ -55,6 +63,7 @@ paddr_t host_to_guest(uint8_t *haddr) {
   if (haddr >= pmem && haddr < pmem + CONFIG_MSIZE) return haddr - pmem + CONFIG_MBASE;
   if (haddr >= mrom && haddr < mrom + MROM_SIZE) return haddr - mrom + MROM_BASE;
   if (haddr >= sram && haddr < sram + SRAM_SIZE) return haddr - sram + SRAM_BASE;
+  if (haddr >= flash && haddr < flash + FLASH_SIZE) return haddr - flash + FLASH_BASE;
   panic("host address %p can not be converted to guest address", haddr);
 }
 
@@ -81,10 +90,11 @@ void init_mem() {
   Log("physical memory area [" FMT_PADDR ", " FMT_PADDR "]", PMEM_LEFT, PMEM_RIGHT);
   Log("mrom area [0x%08x, 0x%08x]", MROM_BASE, MROM_BASE + MROM_SIZE - 1);
   Log("sram area [0x%08x, 0x%08x]", SRAM_BASE, SRAM_BASE + SRAM_SIZE - 1);
+  Log("flash area [0x%08x, 0x%08x]", FLASH_BASE, FLASH_BASE + FLASH_SIZE - 1);
 }
 
 word_t paddr_read(paddr_t addr, int len) {
-  if (likely(in_pmem(addr)) || in_mrom(addr) || in_sram(addr)) {
+  if (likely(in_pmem(addr)) || in_mrom(addr) || in_sram(addr) || in_flash(addr)) {
     word_t data = pmem_read(addr, len);
   #ifdef CONFIG_MTRACE
     if (addr >= CONFIG_MTRACE_START_ADDR && addr <= CONFIG_MTRACE_END_ADDR) {

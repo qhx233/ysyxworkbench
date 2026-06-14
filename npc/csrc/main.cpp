@@ -25,6 +25,10 @@ bool is_skip_ref = false;
 
 static VysyxSoCFull dut;
 
+#ifdef ENABLE_NVBOARD
+void nvboard_bind_all_pins(VysyxSoCFull* top);
+#endif
+
 // =======================================================================
 // MROM 定义 (0x2000_0000 ~ 0x2000_0fff)
 // =======================================================================
@@ -251,6 +255,9 @@ static uint64_t get_time_internal(){
 void single_cycle() {
   dut.clock = 0;dut.eval();
   dut.clock = 1;dut.eval();
+#ifdef ENABLE_NVBOARD
+  nvboard_update();
+#endif
 }
 
 void reset(int n) {
@@ -500,6 +507,10 @@ bool is_skip_ref = false;
 
 static VysyxSoCFull dut;
 
+#ifdef ENABLE_NVBOARD
+void nvboard_bind_all_pins(VysyxSoCFull* top);
+#endif
+
 // =======================================================================
 // MROM 定义 (0x2000_0000 ~ 0x2000_0fff)
 // =======================================================================
@@ -513,6 +524,7 @@ uint8_t mrom[MROM_SIZE];
 uint8_t sram[SRAM_SIZE];
 uint8_t flash[FLASH_SIZE];
 static long img_size_loaded = 0;
+static bool flash_boot = false;
 static const char *ref_so_file = "/home/vboxuser/clip/ysyx-workbench/nemu/build/riscv32-nemu-interpreter-so";
 
 #define ENABLE_ITRACE 0
@@ -545,6 +557,10 @@ void (*ref_difftest_init)(int port) = NULL;
 
 std::vector<Symbol> symbol_table;
 int  call_depth = 0;
+
+extern "C" int npc_reset_pc() {
+    return flash_boot ? FLASH_BASE : MROM_BASE;
+}
 
 // =======================================================================
 // 自动获取正确的 DPI-C 作用域 (智能匹配常见路径)
@@ -697,12 +713,15 @@ void init_difftest(const char *ref_so_file, long img_size) {
     
     ref_difftest_init(0);
     memset(sram, 0, sizeof(sram));
-    ref_difftest_memcpy(MROM_BASE, mrom, img_size, DIFFTEST_TO_REF);
+    ref_difftest_memcpy(MROM_BASE, mrom, MROM_SIZE, DIFFTEST_TO_REF);
     ref_difftest_memcpy(SRAM_BASE, sram, sizeof(sram), DIFFTEST_TO_REF);
+    if (flash_boot) {
+        ref_difftest_memcpy(FLASH_BASE, flash, img_size, DIFFTEST_TO_REF);
+    }
 
     diff_context_t ctx ;
     ref_difftest_regcpy(&ctx, DIFFTEST_TO_DUT); 
-    ctx.pc = MROM_BASE;
+    ctx.pc = npc_read_pc();
     for(int i = 0; i < 16; i++) {
         ctx.gpr[i] = npc_read_gpr(i); 
     }
@@ -761,7 +780,11 @@ void load_img(char *img_file) {
         uint32_t built_in_prog[] = {
             0x0000006f // j pc
         };
-        memcpy(mrom, built_in_prog, sizeof(built_in_prog));
+        if (flash_boot) {
+            memcpy(flash, built_in_prog, sizeof(built_in_prog));
+        } else {
+            memcpy(mrom, built_in_prog, sizeof(built_in_prog));
+        }
         img_size_loaded = sizeof(built_in_prog);
         return;
     }
@@ -772,18 +795,19 @@ void load_img(char *img_file) {
     long size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
 
-    if (size > MROM_SIZE) {
-        printf("ERROR: 镜像文件太大，无法放入 MROM！\n");
+    long capacity = flash_boot ? FLASH_SIZE : MROM_SIZE;
+    if (size > capacity) {
+        printf("ERROR: 镜像文件太大，无法放入 %s！\n", flash_boot ? "FLASH" : "MROM");
         assert(0);
     }
     
-    // 【修改点】：将镜像文件读入 mrom 数组
-    size_t ret = fread(mrom, size, 1, fp);
+    uint8_t *dest = flash_boot ? flash : mrom;
+    size_t ret = fread(dest, size, 1, fp);
     assert(ret == 1);
     fclose(fp);
     img_size_loaded = size;
 
-    printf("成功加载镜像: %s, 大小: %ld bytes (已烧录至 MROM)\n", img_file, size);
+    printf("成功加载镜像: %s, 大小: %ld bytes (已烧录至 %s)\n", img_file, size, flash_boot ? "FLASH" : "MROM");
 }
 
 static uint32_t flash_pattern(uint32_t addr) {
@@ -973,6 +997,10 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) {
       if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--batch") == 0) {
           batch_mode = true;
+      } else if (strcmp(argv[i], "--flash-boot") == 0) {
+          flash_boot = true;
+      } else if (strcmp(argv[i], "--no-difftest") == 0) {
+          ref_so_file = NULL;
       } else if (img_file == NULL) {
           img_file = argv[i];
       } else if (elf_file == NULL) {
@@ -980,11 +1008,16 @@ int main(int argc, char** argv) {
       }
   }
 
-  load_img(img_file);
   init_flash();
+  load_img(img_file);
 
   init_disasm();
   init_elf(elf_file);
+
+#ifdef ENABLE_NVBOARD
+  nvboard_bind_all_pins(&dut);
+  nvboard_init();
+#endif
   
   reset(10);
   init_difftest(ref_so_file, img_size_loaded);
@@ -995,6 +1028,10 @@ int main(int argc, char** argv) {
       printf("\033[1;36m[NPC] 运行在 SDB 模式 (交互调试)...\033[0m\n");
       sdb_mainloop(); 
   }
+
+#ifdef ENABLE_NVBOARD
+  nvboard_quit();
+#endif
   
   return 0;
 }

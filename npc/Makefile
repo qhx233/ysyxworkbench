@@ -46,6 +46,7 @@ LDFLAGS += -lcapstone  -lelf -ldl
 INCFLAGS = $(addprefix -I, $(INC_PATH))
 CXXFLAGS += $(INCFLAGS) -DTOP_NAME="\"V$(TOPNAME)\""
 
+$(BIN): CXXFLAGS += -DENABLE_NVBOARD
 $(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE)
 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
@@ -72,14 +73,16 @@ $(BIN_SIM): $(VSRCS) $(CSRCS_SIM)
 all: default
 
 
-run: $(BIN)
-	@$^
+IMG ?=
+ARGS ?= --flash-boot
 
-# 增加 IMG 变量，允许从命令行传参
-IMG ?= 
+run: $(BIN)
+	@$^ $(ARGS) $(IMG)
+
+# 增加 IMG/ARGS 变量，允许从命令行传参；默认从 FLASH 取指，ARGS= 可保留 MROM 路径。
 
 sim: $(BIN_SIM)
-	@$^ $(IMG)
+	@$^ $(ARGS) $(IMG)
 
 
 clean:
