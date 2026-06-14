@@ -103,6 +103,7 @@ static void clear_bss() {
   }
 }
 
+#if defined(__YSYXSOC_LOAD_TO_SRAM__) || defined(__YSYXSOC_LOAD_TO_PSRAM__) || defined(__YSYXSOC_LOAD_TO_SDRAM__)
 __attribute__((section(".flash_text"), noinline))
 static void fsbl_copy_image(char *dst, char *src, char *end) {
   while ((((uintptr_t)dst | (uintptr_t)src | (uintptr_t)end) & 3) == 0 && src + 4 <= end) {
@@ -114,6 +115,7 @@ static void fsbl_copy_image(char *dst, char *src, char *end) {
     *dst++ = *src++;
   }
 }
+#endif
 
 #if defined(__YSYXSOC_LOAD_TO_PSRAM__) || defined(__YSYXSOC_LOAD_TO_SDRAM__)
 __attribute__((section(".ssbl_text"), noinline))

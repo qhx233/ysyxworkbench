@@ -13,6 +13,7 @@
 #include <gelf.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <vector>
 #include <dlfcn.h>
 
@@ -28,6 +29,100 @@ static VysyxSoCFull dut;
 #ifdef ENABLE_NVBOARD
 void nvboard_bind_all_pins(VysyxSoCFull* top);
 #endif
+
+static const int UART_BIT_TICKS = 16;
+static bool uart_stdin_enabled = false;
+static bool uart_stdin_inited = false;
+static uint16_t uart_rx_frame = 0x3ff;
+static int uart_rx_bits = 0;
+static int uart_rx_ticks = 0;
+
+static int uart_tx_state = 0;
+static int uart_tx_ticks = 0;
+static int uart_tx_bits = 0;
+static uint8_t uart_tx_data = 0;
+static bool uart_debug_enabled = false;
+
+static void init_uart_stdin() {
+  if (uart_stdin_inited) return;
+  int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+  if (flags >= 0) {
+    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+  }
+  uart_stdin_inited = true;
+}
+
+static int read_uart_stdin_byte() {
+  init_uart_stdin();
+  unsigned char ch;
+  ssize_t n = read(STDIN_FILENO, &ch, 1);
+  if (n == 1) return ch;
+  if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+    return -1;
+  }
+  return -1;
+}
+
+static void drive_uart_rx() {
+#ifdef ENABLE_NVBOARD
+  (void)read_uart_stdin_byte;
+#else
+  if (!uart_stdin_enabled) {
+    dut.externalPins_uart_rx = 1;
+    return;
+  }
+
+  if (uart_rx_bits == 0) {
+    int ch = read_uart_stdin_byte();
+    if (ch < 0) {
+      dut.externalPins_uart_rx = 1;
+      return;
+    }
+    if (uart_debug_enabled) {
+      fprintf(stderr, "[UART-RX stdin] 0x%02x '%c'\n", ch & 0xff,
+              (ch >= 32 && ch < 127) ? ch : '.');
+    }
+    uart_rx_frame = (1u << 9) | ((uint16_t)(ch & 0xff) << 1);
+    uart_rx_bits = 10;
+    uart_rx_ticks = UART_BIT_TICKS;
+  }
+
+  dut.externalPins_uart_rx = uart_rx_frame & 1u;
+  if (--uart_rx_ticks == 0) {
+    uart_rx_frame = (uart_rx_frame >> 1) | 0x200u;
+    uart_rx_bits--;
+    uart_rx_ticks = UART_BIT_TICKS;
+  }
+#endif
+}
+
+static void sample_uart_tx() {
+  int tx = dut.externalPins_uart_tx ? 1 : 0;
+
+  if (uart_tx_state == 0) {
+    if (tx == 0) {
+      uart_tx_state = 1;
+      uart_tx_ticks = UART_BIT_TICKS + UART_BIT_TICKS / 2;
+      uart_tx_bits = 0;
+      uart_tx_data = 0;
+    }
+    return;
+  }
+
+  if (--uart_tx_ticks > 0) return;
+
+  if (uart_tx_state == 1) {
+    if (uart_tx_bits < 8) {
+      uart_tx_data |= (uint8_t)(tx << uart_tx_bits);
+      uart_tx_bits++;
+      uart_tx_ticks = UART_BIT_TICKS;
+    } else {
+      putchar(uart_tx_data);
+      fflush(stdout);
+      uart_tx_state = 0;
+    }
+  }
+}
 
 // =======================================================================
 // MROM 定义 (0x2000_0000 ~ 0x2000_0fff)
@@ -74,6 +169,14 @@ svScope get_dpi_scope() {
     static svScope scope = NULL;
     if (scope == NULL) {
         const char* possible_scopes[] = {
+            "ysyxSoCFull.asic.cpu.cpu.cpu",
+            "ysyxSoCFull.asic.cpu.cpu.ysyx_23060000",
+            "ysyxSoCFull.asic.cpu.cpu",
+            "ysyxSoCFull.asic.cpu",
+            "ysyxSoCFull.asic.cpu.ysyx_00000000",
+            "ysyxSoCFull.asic.cpu.ysyx_23060000",
+            "TOP.ysyxSoCFull.asic.cpu.cpu.cpu",
+            "TOP.ysyxSoCFull.asic.cpu.cpu.ysyx_23060000",
             "TOP.ysyxSoCFull.asic.cpu.cpu",
             "TOP.ysyxSoCFull.asic.cpu",
             "TOP.ysyxSoCFull.asic.cpu.ysyx_00000000",
@@ -85,7 +188,7 @@ svScope get_dpi_scope() {
             "TOP.ysyxSoCFull.ysyx_00000000",
             "TOP.ysyxSoCFull.ysyx_23060000"
         };
-        for (int i = 0; i < 10; i++) {
+        for (size_t i = 0; i < sizeof(possible_scopes) / sizeof(possible_scopes[0]); i++) {
             scope = svGetScopeFromName(possible_scopes[i]);
             if (scope) {
                 printf("\033[1;32m[NPC] 成功匹配到 DPI-C 作用域: %s\033[0m\n", possible_scopes[i]);
@@ -253,8 +356,10 @@ static uint64_t get_time_internal(){
 }
 
 void single_cycle() {
+  drive_uart_rx();
   dut.clock = 0;dut.eval();
   dut.clock = 1;dut.eval();
+  sample_uart_tx();
 #ifdef ENABLE_NVBOARD
   nvboard_update();
 #endif
@@ -262,8 +367,10 @@ void single_cycle() {
 
 void reset(int n) {
   dut.reset = 1;
+  uart_stdin_enabled = false;
   while(n-- >0) single_cycle();
   dut.reset = 0;
+  uart_stdin_enabled = true;
 }
 
 extern "C" void npc_trap(int a0_val) {
@@ -448,6 +555,7 @@ void sdb_mainloop(){
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
+  uart_debug_enabled = getenv("NPC_UART_DEBUG") != NULL;
   
   boot_time = get_time_internal();
 
@@ -495,6 +603,7 @@ int main(int argc, char** argv) {
 #include <gelf.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <vector>
 #include <dlfcn.h>
 
@@ -510,6 +619,67 @@ static VysyxSoCFull dut;
 #ifdef ENABLE_NVBOARD
 void nvboard_bind_all_pins(VysyxSoCFull* top);
 #endif
+
+static const int UART_BIT_TICKS = 16;
+static bool uart_stdin_enabled = false;
+static bool uart_stdin_inited = false;
+static uint16_t uart_rx_frame = 0x3ff;
+static int uart_rx_bits = 0;
+static int uart_rx_ticks = 0;
+static bool uart_debug_enabled = false;
+
+static void init_uart_stdin() {
+  if (uart_stdin_inited) return;
+  int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+  if (flags >= 0) {
+    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+  }
+  uart_stdin_inited = true;
+}
+
+static int read_uart_stdin_byte() {
+  init_uart_stdin();
+  unsigned char ch;
+  ssize_t n = read(STDIN_FILENO, &ch, 1);
+  if (n == 1) return ch;
+  if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+    return -1;
+  }
+  return -1;
+}
+
+static void drive_uart_rx() {
+#ifdef ENABLE_NVBOARD
+  (void)read_uart_stdin_byte;
+#else
+  if (!uart_stdin_enabled) {
+    dut.externalPins_uart_rx = 1;
+    return;
+  }
+
+  if (uart_rx_bits == 0) {
+    int ch = read_uart_stdin_byte();
+    if (ch < 0) {
+      dut.externalPins_uart_rx = 1;
+      return;
+    }
+    if (uart_debug_enabled) {
+      fprintf(stderr, "[UART-RX stdin] 0x%02x '%c'\n", ch & 0xff,
+              (ch >= 32 && ch < 127) ? ch : '.');
+    }
+    uart_rx_frame = (1u << 9) | ((uint16_t)(ch & 0xff) << 1);
+    uart_rx_bits = 10;
+    uart_rx_ticks = UART_BIT_TICKS;
+  }
+
+  dut.externalPins_uart_rx = uart_rx_frame & 1u;
+  if (--uart_rx_ticks == 0) {
+    uart_rx_frame = (uart_rx_frame >> 1) | 0x200u;
+    uart_rx_bits--;
+    uart_rx_ticks = UART_BIT_TICKS;
+  }
+#endif
+}
 
 // =======================================================================
 // MROM 定义 (0x2000_0000 ~ 0x2000_0fff)
@@ -569,6 +739,14 @@ svScope get_dpi_scope() {
     static svScope scope = NULL;
     if (scope == NULL) {
         const char* possible_scopes[] = {
+            "ysyxSoCFull.asic.cpu.cpu.cpu",
+            "ysyxSoCFull.asic.cpu.cpu.ysyx_23060000",
+            "ysyxSoCFull.asic.cpu.cpu",
+            "ysyxSoCFull.asic.cpu",
+            "ysyxSoCFull.asic.cpu.ysyx_00000000",
+            "ysyxSoCFull.asic.cpu.ysyx_23060000",
+            "TOP.ysyxSoCFull.asic.cpu.cpu.cpu",
+            "TOP.ysyxSoCFull.asic.cpu.cpu.ysyx_23060000",
             "TOP.ysyxSoCFull.asic.cpu.cpu",
             "TOP.ysyxSoCFull.asic.cpu",
             "TOP.ysyxSoCFull.asic.cpu.ysyx_00000000",
@@ -580,7 +758,7 @@ svScope get_dpi_scope() {
             "TOP.ysyxSoCFull.ysyx_00000000",
             "TOP.ysyxSoCFull.ysyx_23060000"
         };
-        for (int i = 0; i < 10; i++) {
+        for (size_t i = 0; i < sizeof(possible_scopes) / sizeof(possible_scopes[0]); i++) {
             scope = svGetScopeFromName(possible_scopes[i]);
             if (scope) {
                 printf("\033[1;32m[NPC] 成功匹配到 DPI-C 作用域: %s\033[0m\n", possible_scopes[i]);
@@ -753,14 +931,20 @@ static uint64_t get_time_internal(){
 }
 
 void single_cycle() {
+  drive_uart_rx();
   dut.clock = 0;dut.eval();
   dut.clock = 1;dut.eval();
+#ifdef ENABLE_NVBOARD
+  nvboard_update();
+#endif
 }
 
 void reset(int n) {
   dut.reset = 1;
+  uart_stdin_enabled = false;
   while(n-- >0) single_cycle();
   dut.reset = 0;
+  uart_stdin_enabled = true;
 }
 
 extern "C" void npc_trap(int a0_val) {
@@ -987,6 +1171,7 @@ void sdb_mainloop(){
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
+  uart_debug_enabled = getenv("NPC_UART_DEBUG") != NULL;
   
   boot_time = get_time_internal();
 

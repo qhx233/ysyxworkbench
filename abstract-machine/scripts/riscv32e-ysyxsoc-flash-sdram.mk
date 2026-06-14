@@ -28,6 +28,12 @@ endif
 ifneq ($(MEM_TEST_EXTRA_SIZE),)
 CFLAGS  += -DMEM_TEST_EXTRA_SIZE=$(MEM_TEST_EXTRA_SIZE)
 endif
+ifneq ($(MEM_TEST_EXTRA_WORD_ONLY),)
+CFLAGS  += -DMEM_TEST_EXTRA_WORD_ONLY=$(MEM_TEST_EXTRA_WORD_ONLY)
+endif
+ifeq ($(NVBOARD),1)
+CFLAGS  += -DGPIO_HOLD_DISPLAY -DGPIO_STUDENT_ID_ONLY
+endif
 LDFLAGS += -T $(AM_HOME)/am/src/riscv/ysyxsoc/linker-flash-sdram.ld
 LDFLAGS += --gc-sections -e _start
 
@@ -47,4 +53,8 @@ run: insert-arg
 	@echo "--------------------------------------------------"
 	@echo "[ysyxSoC flash->sdram] 正在运行: $(IMAGE_REL).bin"
 	@echo "--------------------------------------------------"
+ifeq ($(NVBOARD),1)
+	$(MAKE) -C $(NPC_HOME) run IMG=$(IMAGE).bin ARGS="--flash-boot --no-difftest -b"
+else
 	$(MAKE) -C $(NPC_HOME) sim IMG=$(IMAGE).bin ARGS="--flash-boot --no-difftest -b"
+endif

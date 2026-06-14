@@ -8,9 +8,16 @@ VERILATOR = verilator
 # 加入了 --trace，保证仿真时能生成波形
 VERILATOR_CFLAGS += -MMD --build -cc --trace \
                 -O3 --x-assign fast --x-initial fast --noassert \
-                --timescale "1ns/1ns" --no-timing --autoflush
+                --timescale "1ns/1ns" --no-timing --autoflush \
+                -Wno-UNOPTFLAT
 VERILATOR_CFLAGS += -I$(YSYXSOC_HOME)/perip/uart16550/rtl
 VERILATOR_CFLAGS += -I$(YSYXSOC_HOME)/perip/spi/rtl
+ifeq ($(PS2_DEBUG),1)
+VERILATOR_CFLAGS += -DPS2_DEBUG
+endif
+ifeq ($(VGA_DEBUG),1)
+VERILATOR_CFLAGS += -DVGA_DEBUG
+endif
 
 BUILD_DIR = ./build
 OBJ_DIR = $(BUILD_DIR)/obj_dir
