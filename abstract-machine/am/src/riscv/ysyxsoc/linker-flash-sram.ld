@@ -23,6 +23,7 @@ SECTIONS {
   .rodata : {
     *(.rodata*)
     *(.srodata*)
+    . = ALIGN(4);
   } > sram AT> flash
 
   .data : {

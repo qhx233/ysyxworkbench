@@ -124,6 +124,8 @@ module ysyx_23060000(
     // =================================================================
     import "DPI-C" function void npc_trap(input int a0_val);
     import "DPI-C" function void npc_itrace_commit(input int pc, input int inst, input int dnpc);
+    import "DPI-C" function void npc_perf_event(input int event_id, input int data);
+    import "DPI-C" function void npc_perf_commit(input int category, input int cycles);
     import "DPI-C" function int npc_reset_pc();
 
     reg [31:0] pc; 
@@ -230,6 +232,40 @@ module ysyx_23060000(
 `endif
 
     wire [4:0] rs1_idx = inst[19:15], rs2_idx = inst[24:20], rd_idx  = inst[11:7];
+`ifdef SDRAM_DEBUG
+    reg [7:0] sdram_dbg_count;
+    reg [31:0] sdram_dbg_awaddr;
+    reg [31:0] sdram_dbg_wdata;
+    reg [3:0]  sdram_dbg_wstrb;
+    wire sdram_dbg_load_hit = lsu_hsk_r && op_load &&
+        (lsu_araddr >= 32'ha00053f0 && lsu_araddr < 32'ha0005910);
+    wire sdram_dbg_store_hit = lsu_hsk_b && op_store &&
+        (sdram_dbg_awaddr >= 32'ha00053f0 && sdram_dbg_awaddr < 32'ha0005910);
+    always @(posedge clk) begin
+        if (rst) begin
+            sdram_dbg_count <= 8'b0;
+            sdram_dbg_awaddr <= 32'b0;
+            sdram_dbg_wdata <= 32'b0;
+            sdram_dbg_wstrb <= 4'b0;
+        end else begin
+            if (lsu_hsk_aw) sdram_dbg_awaddr <= lsu_awaddr;
+            if (lsu_hsk_w) begin
+                sdram_dbg_wdata <= lsu_wdata;
+                sdram_dbg_wstrb <= lsu_wstrb;
+            end
+            if (sdram_dbg_count < 8'd160 && (sdram_dbg_load_hit || sdram_dbg_store_hit)) begin
+            if (sdram_dbg_load_hit) begin
+                $display("[SDRAM-CPU] load  pc=0x%08x inst=0x%08x addr=0x%08x data=0x%08x rd=%0d",
+                         pc, inst, lsu_araddr, lsu_rdata, rd_idx);
+            end else begin
+                $display("[SDRAM-CPU] store pc=0x%08x inst=0x%08x addr=0x%08x data=0x%08x strb=0x%x",
+                         pc, inst, sdram_dbg_awaddr, sdram_dbg_wdata, sdram_dbg_wstrb);
+            end
+            sdram_dbg_count <= sdram_dbg_count + 1'b1;
+            end
+        end
+    end
+`endif
     wire [31:0] imm_I = {{20{inst[31]}}, inst[31:20]};
     wire [31:0] imm_S = {{20{inst[31]}}, inst[31:25], inst[11:7]};
     wire [31:0] imm_B = {{20{inst[31]}}, inst[7], inst[30:25], inst[11:8], 1'b0};
@@ -239,6 +275,22 @@ module ysyx_23060000(
     wire op_lui = (opcode == 7'b0110111), op_auipc = (opcode == 7'b0010111), op_jal = (opcode == 7'b1101111);
     wire op_jalr = (opcode == 7'b1100111), op_branch = (opcode == 7'b1100011), op_imm = (opcode == 7'b0010011);
     wire op_reg = (opcode == 7'b0110011), op_system = (opcode == 7'b1110011), is_ebreak = (inst == 32'h00100073);
+    localparam PERF_CAT_ALU    = 32'd0;
+    localparam PERF_CAT_LOAD   = 32'd1;
+    localparam PERF_CAT_STORE  = 32'd2;
+    localparam PERF_CAT_BRANCH = 32'd3;
+    localparam PERF_CAT_JUMP   = 32'd4;
+    localparam PERF_CAT_CSR    = 32'd5;
+    localparam PERF_CAT_SYSTEM = 32'd6;
+    localparam PERF_CAT_OTHER  = 32'd7;
+    wire [31:0] perf_inst_category =
+        op_load                    ? PERF_CAT_LOAD   :
+        op_store                   ? PERF_CAT_STORE  :
+        op_branch                  ? PERF_CAT_BRANCH :
+        (op_jal || op_jalr)        ? PERF_CAT_JUMP   :
+        (op_system && funct3 != 0) ? PERF_CAT_CSR    :
+        op_system                  ? PERF_CAT_SYSTEM :
+        (op_lui || op_auipc || op_imm || op_reg) ? PERF_CAT_ALU : PERF_CAT_OTHER;
 
     wire alu_eq = (rs1_data == rs2_data), alu_lt = ($signed(rs1_data) < $signed(rs2_data)), alu_ltu = (rs1_data < rs2_data);
     wire branch_taken = op_branch && ((funct3 == 3'b000 && alu_eq) || (funct3 == 3'b001 && !alu_eq) || 
@@ -410,6 +462,59 @@ module ysyx_23060000(
 
     reg commit_flag; always @(posedge clk) if (rst) commit_flag <= 0; else commit_flag <= !stall; 
     export "DPI-C" function npc_is_commit; function int npc_is_commit; return commit_flag ? 32'd1 : 32'd0; endfunction
+
+    localparam PERF_EVT_IFU_FETCH        = 32'd0;
+    localparam PERF_EVT_LSU_LOAD_DATA    = 32'd1;
+    localparam PERF_EVT_LSU_STORE_DONE   = 32'd2;
+    localparam PERF_EVT_EXU_DONE         = 32'd3;
+    localparam PERF_EVT_IFU_WAIT_REQ     = 32'd10;
+    localparam PERF_EVT_IFU_WAIT_RSP     = 32'd11;
+    localparam PERF_EVT_IFU_WAIT_LSU_LD  = 32'd12;
+    localparam PERF_EVT_IFU_WAIT_LSU_ST  = 32'd13;
+    localparam PERF_EVT_LSU_LOAD_LAT     = 32'd20;
+    localparam PERF_EVT_LSU_STORE_LAT    = 32'd21;
+
+    reg [31:0] perf_inst_cycles;
+    reg [31:0] perf_lsu_cycles;
+    always @(posedge clk) begin
+        if (rst) begin
+            perf_inst_cycles <= 32'b0;
+            perf_lsu_cycles <= 32'b0;
+        end else begin
+            if (ifu_hsk_r) npc_perf_event(PERF_EVT_IFU_FETCH, 32'd0);
+            if (lsu_hsk_r && op_load) npc_perf_event(PERF_EVT_LSU_LOAD_DATA, 32'd0);
+            if (lsu_hsk_b && op_store) npc_perf_event(PERF_EVT_LSU_STORE_DONE, 32'd0);
+            if (commit_non_mem) npc_perf_event(PERF_EVT_EXU_DONE, 32'd0);
+
+            if (!ifu_hsk_r) begin
+                if (state == ST_IF_REQ) npc_perf_event(PERF_EVT_IFU_WAIT_REQ, 32'd0);
+                else if (state == ST_IF_RSP) npc_perf_event(PERF_EVT_IFU_WAIT_RSP, 32'd0);
+                else if (state == ST_MEM_REQ || state == ST_MEM_RSP) begin
+                    if (op_load) npc_perf_event(PERF_EVT_IFU_WAIT_LSU_LD, 32'd0);
+                    else npc_perf_event(PERF_EVT_IFU_WAIT_LSU_ST, 32'd0);
+                end
+            end
+
+            if (commit_non_mem || commit_mem) begin
+                npc_perf_commit(perf_inst_category, perf_inst_cycles + 32'd1);
+                perf_inst_cycles <= 32'b0;
+            end else begin
+                perf_inst_cycles <= perf_inst_cycles + 32'd1;
+            end
+
+            if (state == ST_MEM_REQ || state == ST_MEM_RSP) begin
+                if (commit_mem) begin
+                    npc_perf_event(op_load ? PERF_EVT_LSU_LOAD_LAT : PERF_EVT_LSU_STORE_LAT,
+                                   perf_lsu_cycles + 32'd1);
+                    perf_lsu_cycles <= 32'b0;
+                end else begin
+                    perf_lsu_cycles <= perf_lsu_cycles + 32'd1;
+                end
+            end else begin
+                perf_lsu_cycles <= 32'b0;
+            end
+        end
+    end
 
     always @(posedge clk) begin
         if (!rst && !stall) begin

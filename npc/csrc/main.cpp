@@ -426,7 +426,8 @@ extern "C" void mrom_read(int32_t addr, int32_t *data) {
         uint32_t offset = uaddr - MROM_BASE;
         *data = *(uint32_t *)(mrom + offset);
     } else {
-        printf("\n\033[1;31m[ERROR] 越界读取 MROM 地址: 0x%08x\033[0m\n", uaddr);
+        svSetScope(get_dpi_scope());
+        printf("\n\033[1;31m[ERROR] 越界读取 MROM 地址: 0x%08x, CPU PC: 0x%08x\033[0m\n", uaddr, npc_read_pc());
         *data = 0;
     }
 }
@@ -924,16 +925,183 @@ void checkregs(diff_context_t * ref) {
 }
 
 static uint64_t boot_time = 0;
+static uint64_t perf_cycles = 0;
+static uint64_t perf_insts = 0;
+
+enum {
+  PERF_CAT_ALU = 0,
+  PERF_CAT_LOAD,
+  PERF_CAT_STORE,
+  PERF_CAT_BRANCH,
+  PERF_CAT_JUMP,
+  PERF_CAT_CSR,
+  PERF_CAT_SYSTEM,
+  PERF_CAT_OTHER,
+  PERF_CAT_NR
+};
+
+enum {
+  PERF_EVT_IFU_FETCH = 0,
+  PERF_EVT_LSU_LOAD_DATA = 1,
+  PERF_EVT_LSU_STORE_DONE = 2,
+  PERF_EVT_EXU_DONE = 3,
+  PERF_EVT_IFU_WAIT_REQ = 10,
+  PERF_EVT_IFU_WAIT_RSP = 11,
+  PERF_EVT_IFU_WAIT_LSU_LD = 12,
+  PERF_EVT_IFU_WAIT_LSU_ST = 13,
+  PERF_EVT_LSU_LOAD_LAT = 20,
+  PERF_EVT_LSU_STORE_LAT = 21
+};
+
+static const char *perf_cat_name[PERF_CAT_NR] = {
+  "ALU", "LOAD", "STORE", "BRANCH", "JUMP", "CSR", "SYSTEM", "OTHER"
+};
+
+static uint64_t perf_cat_count[PERF_CAT_NR];
+static uint64_t perf_cat_cycles[PERF_CAT_NR];
+static uint64_t perf_ifu_fetch = 0;
+static uint64_t perf_lsu_load_data = 0;
+static uint64_t perf_lsu_store_done = 0;
+static uint64_t perf_exu_done = 0;
+static uint64_t perf_ifu_wait_req = 0;
+static uint64_t perf_ifu_wait_rsp = 0;
+static uint64_t perf_ifu_wait_lsu_ld = 0;
+static uint64_t perf_ifu_wait_lsu_st = 0;
+static uint64_t perf_lsu_load_lat_sum = 0;
+static uint64_t perf_lsu_store_lat_sum = 0;
+static uint64_t perf_lsu_load_lat_count = 0;
+static uint64_t perf_lsu_store_lat_count = 0;
+
 static uint64_t get_time_internal(){
     struct timeval now;
     gettimeofday(&now, NULL);
     return now.tv_sec * 1000000ull + now.tv_usec;
 }
 
+static void reset_perf_stats() {
+  perf_cycles = 0;
+  perf_insts = 0;
+  memset(perf_cat_count, 0, sizeof(perf_cat_count));
+  memset(perf_cat_cycles, 0, sizeof(perf_cat_cycles));
+  perf_ifu_fetch = 0;
+  perf_lsu_load_data = 0;
+  perf_lsu_store_done = 0;
+  perf_exu_done = 0;
+  perf_ifu_wait_req = 0;
+  perf_ifu_wait_rsp = 0;
+  perf_ifu_wait_lsu_ld = 0;
+  perf_ifu_wait_lsu_st = 0;
+  perf_lsu_load_lat_sum = 0;
+  perf_lsu_store_lat_sum = 0;
+  perf_lsu_load_lat_count = 0;
+  perf_lsu_store_lat_count = 0;
+  boot_time = get_time_internal();
+}
+
+extern "C" void npc_perf_event(int event, int data) {
+  switch (event) {
+    case PERF_EVT_IFU_FETCH:       perf_ifu_fetch++; break;
+    case PERF_EVT_LSU_LOAD_DATA:   perf_lsu_load_data++; break;
+    case PERF_EVT_LSU_STORE_DONE:  perf_lsu_store_done++; break;
+    case PERF_EVT_EXU_DONE:        perf_exu_done++; break;
+    case PERF_EVT_IFU_WAIT_REQ:    perf_ifu_wait_req++; break;
+    case PERF_EVT_IFU_WAIT_RSP:    perf_ifu_wait_rsp++; break;
+    case PERF_EVT_IFU_WAIT_LSU_LD: perf_ifu_wait_lsu_ld++; break;
+    case PERF_EVT_IFU_WAIT_LSU_ST: perf_ifu_wait_lsu_st++; break;
+    case PERF_EVT_LSU_LOAD_LAT:
+      perf_lsu_load_lat_sum += (uint32_t)data;
+      perf_lsu_load_lat_count++;
+      break;
+    case PERF_EVT_LSU_STORE_LAT:
+      perf_lsu_store_lat_sum += (uint32_t)data;
+      perf_lsu_store_lat_count++;
+      break;
+    default:
+      break;
+  }
+}
+
+extern "C" void npc_perf_commit(int category, int cycles) {
+  if (category < 0 || category >= PERF_CAT_NR) {
+    category = PERF_CAT_OTHER;
+  }
+  perf_cat_count[category]++;
+  perf_cat_cycles[category] += (uint32_t)cycles;
+}
+
+static void print_perf_stats() {
+  uint64_t elapsed_us = get_time_internal() - boot_time;
+  double ipc = perf_cycles == 0 ? 0.0 : (double)perf_insts / (double)perf_cycles;
+  double cpi = perf_insts == 0 ? 0.0 : (double)perf_cycles / (double)perf_insts;
+  double sim_freq = elapsed_us == 0 ? 0.0 : (double)perf_cycles / (double)elapsed_us;
+  uint64_t decoded_insts = 0;
+  uint64_t ifu_wait_total = perf_ifu_wait_req + perf_ifu_wait_rsp + perf_ifu_wait_lsu_ld + perf_ifu_wait_lsu_st;
+
+  printf("========== NPC Performance ==========\n");
+  printf("cycles        : %llu\n", (unsigned long long)perf_cycles);
+  printf("instructions  : %llu\n", (unsigned long long)perf_insts);
+  printf("IPC           : %.6f\n", ipc);
+  printf("CPI           : %.6f\n", cpi);
+  printf("host time     : %.3f ms\n", (double)elapsed_us / 1000.0);
+  printf("sim speed     : %.3f cycles/us\n", sim_freq);
+  printf("---------- performance events --------\n");
+  printf("IFU fetch inst: %llu\n", (unsigned long long)perf_ifu_fetch);
+  printf("LSU load data : %llu\n", (unsigned long long)perf_lsu_load_data);
+  printf("LSU store done: %llu\n", (unsigned long long)perf_lsu_store_done);
+  printf("EXU done      : %llu\n", (unsigned long long)perf_exu_done);
+  printf("---------- instruction mix -----------\n");
+  for (int i = 0; i < PERF_CAT_NR; i++) {
+    decoded_insts += perf_cat_count[i];
+    double ratio = perf_insts == 0 ? 0.0 : 100.0 * (double)perf_cat_count[i] / (double)perf_insts;
+    double avg_cycles = perf_cat_count[i] == 0 ? 0.0 : (double)perf_cat_cycles[i] / (double)perf_cat_count[i];
+    printf("%-7s: %10llu  %6.2f%%  avg cycles %.3f\n",
+           perf_cat_name[i], (unsigned long long)perf_cat_count[i], ratio, avg_cycles);
+  }
+  printf("---------- IFU not-fetch reasons -----\n");
+  printf("req wait      : %10llu  %6.2f%% of no-fetch, %6.2f%% of cycles\n",
+         (unsigned long long)perf_ifu_wait_req,
+         ifu_wait_total == 0 ? 0.0 : 100.0 * (double)perf_ifu_wait_req / (double)ifu_wait_total,
+         perf_cycles == 0 ? 0.0 : 100.0 * (double)perf_ifu_wait_req / (double)perf_cycles);
+  printf("rsp wait      : %10llu  %6.2f%% of no-fetch, %6.2f%% of cycles\n",
+         (unsigned long long)perf_ifu_wait_rsp,
+         ifu_wait_total == 0 ? 0.0 : 100.0 * (double)perf_ifu_wait_rsp / (double)ifu_wait_total,
+         perf_cycles == 0 ? 0.0 : 100.0 * (double)perf_ifu_wait_rsp / (double)perf_cycles);
+  printf("LSU load busy : %10llu  %6.2f%% of no-fetch, %6.2f%% of cycles\n",
+         (unsigned long long)perf_ifu_wait_lsu_ld,
+         ifu_wait_total == 0 ? 0.0 : 100.0 * (double)perf_ifu_wait_lsu_ld / (double)ifu_wait_total,
+         perf_cycles == 0 ? 0.0 : 100.0 * (double)perf_ifu_wait_lsu_ld / (double)perf_cycles);
+  printf("LSU store busy: %10llu  %6.2f%% of no-fetch, %6.2f%% of cycles\n",
+         (unsigned long long)perf_ifu_wait_lsu_st,
+         ifu_wait_total == 0 ? 0.0 : 100.0 * (double)perf_ifu_wait_lsu_st / (double)ifu_wait_total,
+         perf_cycles == 0 ? 0.0 : 100.0 * (double)perf_ifu_wait_lsu_st / (double)perf_cycles);
+  printf("---------- LSU latency ---------------\n");
+  printf("load avg      : %.3f cycles (%llu samples)\n",
+         perf_lsu_load_lat_count == 0 ? 0.0 : (double)perf_lsu_load_lat_sum / (double)perf_lsu_load_lat_count,
+         (unsigned long long)perf_lsu_load_lat_count);
+  printf("store avg     : %.3f cycles (%llu samples)\n",
+         perf_lsu_store_lat_count == 0 ? 0.0 : (double)perf_lsu_store_lat_sum / (double)perf_lsu_store_lat_count,
+         (unsigned long long)perf_lsu_store_lat_count);
+  printf("---------- consistency checks --------\n");
+  printf("decoded == inst      : %s (%llu vs %llu)\n",
+         decoded_insts == perf_insts ? "PASS" : "FAIL",
+         (unsigned long long)decoded_insts, (unsigned long long)perf_insts);
+  printf("IFU fetch == inst    : %s (%llu vs %llu)\n",
+         perf_ifu_fetch == perf_insts ? "PASS" : "FAIL",
+         (unsigned long long)perf_ifu_fetch, (unsigned long long)perf_insts);
+  printf("LOAD count == LSU LD : %s (%llu vs %llu)\n",
+         perf_cat_count[PERF_CAT_LOAD] == perf_lsu_load_data ? "PASS" : "FAIL",
+         (unsigned long long)perf_cat_count[PERF_CAT_LOAD], (unsigned long long)perf_lsu_load_data);
+  printf("STORE count == LSU ST: %s (%llu vs %llu)\n",
+         perf_cat_count[PERF_CAT_STORE] == perf_lsu_store_done ? "PASS" : "FAIL",
+         (unsigned long long)perf_cat_count[PERF_CAT_STORE], (unsigned long long)perf_lsu_store_done);
+  printf("=====================================\n");
+}
+
 void single_cycle() {
   drive_uart_rx();
   dut.clock = 0;dut.eval();
   dut.clock = 1;dut.eval();
+  perf_cycles++;
 #ifdef ENABLE_NVBOARD
   nvboard_update();
 #endif
@@ -1017,7 +1185,8 @@ extern "C" void mrom_read(int32_t addr, int32_t *data) {
         uint32_t offset = uaddr - MROM_BASE;
         *data = *(uint32_t *)(mrom + offset);
     } else {
-        printf("\n\033[1;31m[ERROR] 越界读取 MROM 地址: 0x%08x\033[0m\n", uaddr);
+        svSetScope(get_dpi_scope());
+        printf("\n\033[1;31m[ERROR] 越界读取 MROM 地址: 0x%08x, CPU PC: 0x%08x\033[0m\n", uaddr, npc_read_pc());
         *data = 0;
     }
 }
@@ -1099,6 +1268,7 @@ void cpu_exec(uint64_t n){
         single_cycle();
 
         if (npc_is_commit()) {
+            perf_insts++;
 #if ENABLE_DIFFTEST
             if(ref_difftest_exec) {
                 if (npc_check_skip() || is_skip_ref) {
@@ -1205,6 +1375,7 @@ int main(int argc, char** argv) {
 #endif
   
   reset(10);
+  reset_perf_stats();
   init_difftest(ref_so_file, img_size_loaded);
   if (batch_mode) {
       printf("\033[1;36m[NPC] 运行在 Batch 模式 (自动执行)...\033[0m\n");
@@ -1213,6 +1384,8 @@ int main(int argc, char** argv) {
       printf("\033[1;36m[NPC] 运行在 SDB 模式 (交互调试)...\033[0m\n");
       sdb_mainloop(); 
   }
+
+  print_perf_stats();
 
 #ifdef ENABLE_NVBOARD
   nvboard_quit();

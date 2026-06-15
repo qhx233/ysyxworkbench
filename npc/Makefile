@@ -18,6 +18,9 @@ endif
 ifeq ($(VGA_DEBUG),1)
 VERILATOR_CFLAGS += -DVGA_DEBUG
 endif
+ifeq ($(SDRAM_DEBUG),1)
+VERILATOR_CFLAGS += -DSDRAM_DEBUG
+endif
 
 BUILD_DIR = ./build
 OBJ_DIR = $(BUILD_DIR)/obj_dir
