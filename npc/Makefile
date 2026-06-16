@@ -1,16 +1,16 @@
-TOPNAME = example
-NXDC_FILES = constr/example.nxdc
+TOPNAME ?= example
+
+# 2. 根据 TOPNAME 自动推导约束文件路径
+NXDC_FILES = constr/$(TOPNAME).nxdc
 INC_PATH ?=
 
 VERILATOR = verilator
-# 加入了 --trace，保证仿真时能生成波形
 VERILATOR_CFLAGS += -MMD --build -cc --trace \
                 -O3 --x-assign fast --x-initial fast --noassert
 
 BUILD_DIR = ./build
 OBJ_DIR = $(BUILD_DIR)/obj_dir
 
-# 定义两个不同的输出文件
 BIN = $(BUILD_DIR)/$(TOPNAME)
 BIN_SIM = $(BUILD_DIR)/$(TOPNAME)_sim
 
@@ -23,9 +23,11 @@ SRC_AUTO_BIND = $(abspath $(BUILD_DIR)/auto_bind.cpp)
 $(SRC_AUTO_BIND): $(NXDC_FILES)
 	python3 $(NVBOARD_HOME)/scripts/auto_pin_bind.py $^ $@
 
-# 修复冲突：加上 -maxdepth 1，只在 csrc 第一层找，不进入 sim/ 文件夹
+# Verilog 文件依然抓取所有的 (Verilator 会自动分析依赖并丢弃未使用的模块)
 VSRCS = $(shell find $(abspath ./vsrc) -name "*.v")
-CSRCS = $(shell find $(abspath ./csrc) -maxdepth 1 -name "*.c" -or -name "*.cc" -or -name "*.cpp")
+
+# [关键修改]: 不再无脑抓取所有 cpp，而是精确抓取和 TOPNAME 同名的 cpp 文件
+CSRCS = $(abspath ./csrc/$(TOPNAME).cpp)
 CSRCS += $(SRC_AUTO_BIND)
 
 include $(NVBOARD_HOME)/scripts/nvboard.mk
@@ -40,11 +42,10 @@ $(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE)
 		--Mdir $(OBJ_DIR) --exe -o $(abspath $(BIN))
 
 # --- 纯仿真 (Sim) 相关的构建 ---
-# 这里去 csrc/sim/ 目录下找仿真用的 main 函数
-CSRCS_SIM = $(shell find $(abspath ./csrc/sim) -name "*.c" -or -name "*.cc" -or -name "*.cpp")
+# [关键修改]: 精确抓取 sim 目录下和 TOPNAME 同名的 cpp 文件
+CSRCS_SIM = $(abspath ./csrc/sim/$(TOPNAME).cpp)
 CXXFLAGS_SIM += $(INCFLAGS) -DTOP_NAME="\"V$(TOPNAME)\""
 
-# 新增：把源文件编译成纯仿真程序 $(BIN_SIM) 的规则
 $(BIN_SIM): $(VSRCS) $(CSRCS_SIM)
 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
@@ -64,7 +65,6 @@ sim: $(BIN_SIM)
 clean:
 	rm -rf $(BUILD_DIR)
 
-# --- 代码检查 (Lint) ---
 lint: $(VSRCS)
 	$(VERILATOR) --lint-only -Wall -Wno-DECLFILENAME $^
 
