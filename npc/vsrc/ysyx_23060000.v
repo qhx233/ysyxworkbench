@@ -100,9 +100,9 @@ module ysyx_23060000(
     assign io_master_wlast   = 1'b1;   // 单拍传输必须拉高
 
     assign io_master_arid    = 4'd0;
-    assign io_master_arlen   = 8'd0;
-    assign io_master_arsize  = ((state == ST_MEM_REQ) && op_load) ? mem_axi_size : 3'b010;
-    assign io_master_arburst = 2'b00;
+    assign io_master_arlen   = arb_arlen;
+    assign io_master_arsize  = arb_arsize;
+    assign io_master_arburst = arb_arburst;
 
     // --- 2. Slave 信号全部锁死赋 0 (修复 PINNOTFOUND 报错) ---
     assign io_slave_awready = 1'b0;
@@ -134,6 +134,8 @@ module ysyx_23060000(
 
     wire        ifu_arvalid, ifu_arready; wire [31:0] ifu_araddr;
     wire        ifu_rvalid, ifu_rready;   wire [31:0] ifu_rdata;
+    wire        ifu_mem_arvalid, ifu_mem_arready; wire [31:0] ifu_mem_araddr; wire [7:0] ifu_mem_arlen; wire [2:0] ifu_mem_arsize; wire [1:0] ifu_mem_arburst;
+    wire        ifu_mem_rvalid, ifu_mem_rready;   wire [31:0] ifu_mem_rdata; wire ifu_mem_rlast;
     wire        ifu_awvalid = 1'b0; wire [31:0] ifu_awaddr  = 32'b0;
     wire        ifu_wvalid  = 1'b0; wire [31:0] ifu_wdata   = 32'b0;
     wire [3:0]  ifu_wstrb   = 4'b0; wire        ifu_bready  = 1'b0;
@@ -323,18 +325,41 @@ module ysyx_23060000(
     // =======================================================================
     // 仲裁器：连接 IFU/LSU，将其合并为单路 AXI4-Lite
     // =======================================================================
-    wire        arb_arvalid, arb_arready; wire [31:0] arb_araddr;
-    wire        arb_rvalid,  arb_rready;  wire [31:0] arb_rdata;
+    wire        arb_arvalid, arb_arready; wire [31:0] arb_araddr; wire [7:0] arb_arlen; wire [2:0] arb_arsize; wire [1:0] arb_arburst;
+    wire        arb_rvalid,  arb_rready;  wire [31:0] arb_rdata; wire arb_rlast;
     wire        arb_awvalid, arb_awready; wire [31:0] arb_awaddr;
     wire        arb_wvalid,  arb_wready;  wire [31:0] arb_wdata; wire [3:0] arb_wstrb;
     wire        arb_bvalid,  arb_bready;
 
+    simple_icache #(
+        .LINE_NUM(16)
+    ) u_icache (
+        .clk(clk),
+        .rst(rst),
+        .cpu_arvalid(ifu_arvalid),
+        .cpu_arready(ifu_arready),
+        .cpu_araddr(ifu_araddr),
+        .cpu_rvalid(ifu_rvalid),
+        .cpu_rready(ifu_rready),
+        .cpu_rdata(ifu_rdata),
+        .mem_arvalid(ifu_mem_arvalid),
+        .mem_arready(ifu_mem_arready),
+        .mem_araddr(ifu_mem_araddr),
+        .mem_arlen(ifu_mem_arlen),
+        .mem_arsize(ifu_mem_arsize),
+        .mem_arburst(ifu_mem_arburst),
+        .mem_rvalid(ifu_mem_rvalid),
+        .mem_rready(ifu_mem_rready),
+        .mem_rdata(ifu_mem_rdata),
+        .mem_rlast(ifu_mem_rlast)
+    );
+
     axi_arbiter u_arbiter (
         .clk(clk), .rst(rst),
-        .ifu_arvalid(ifu_arvalid), .ifu_arready(ifu_arready), .ifu_araddr(ifu_araddr), .ifu_rvalid(ifu_rvalid), .ifu_rready(ifu_rready), .ifu_rdata(ifu_rdata),
-        .lsu_arvalid(lsu_arvalid), .lsu_arready(lsu_arready), .lsu_araddr(lsu_araddr), .lsu_rvalid(lsu_rvalid), .lsu_rready(lsu_rready), .lsu_rdata(lsu_rdata),
+        .ifu_arvalid(ifu_mem_arvalid), .ifu_arready(ifu_mem_arready), .ifu_araddr(ifu_mem_araddr), .ifu_arlen(ifu_mem_arlen), .ifu_arsize(ifu_mem_arsize), .ifu_arburst(ifu_mem_arburst), .ifu_rvalid(ifu_mem_rvalid), .ifu_rready(ifu_mem_rready), .ifu_rdata(ifu_mem_rdata), .ifu_rlast(ifu_mem_rlast),
+        .lsu_arvalid(lsu_arvalid), .lsu_arready(lsu_arready), .lsu_araddr(lsu_araddr), .lsu_arsize(mem_axi_size), .lsu_rvalid(lsu_rvalid), .lsu_rready(lsu_rready), .lsu_rdata(lsu_rdata),
         .lsu_awvalid(lsu_awvalid), .lsu_awready(lsu_awready), .lsu_awaddr(lsu_awaddr), .lsu_wvalid(lsu_wvalid), .lsu_wready(lsu_wready), .lsu_wdata(lsu_wdata), .lsu_wstrb(lsu_wstrb), .lsu_bvalid(lsu_bvalid), .lsu_bready(lsu_bready),
-        .mem_arvalid(arb_arvalid), .mem_arready(arb_arready), .mem_araddr(arb_araddr), .mem_rvalid(arb_rvalid), .mem_rready(arb_rready), .mem_rdata(arb_rdata),
+        .mem_arvalid(arb_arvalid), .mem_arready(arb_arready), .mem_araddr(arb_araddr), .mem_arlen(arb_arlen), .mem_arsize(arb_arsize), .mem_arburst(arb_arburst), .mem_rvalid(arb_rvalid), .mem_rready(arb_rready), .mem_rdata(arb_rdata), .mem_rlast(arb_rlast),
         .mem_awvalid(arb_awvalid), .mem_awready(arb_awready), .mem_awaddr(arb_awaddr), .mem_wvalid(arb_wvalid), .mem_wready(arb_wready), .mem_wdata(arb_wdata), .mem_wstrb(arb_wstrb), .mem_bvalid(arb_bvalid), .mem_bready(arb_bready)
     );
 
@@ -372,6 +397,7 @@ module ysyx_23060000(
     // R
     assign arb_rvalid = clint_rvalid | io_master_rvalid;
     assign arb_rdata  = clint_rvalid ? clint_rdata : io_master_rdata;
+    assign arb_rlast  = clint_rvalid ? 1'b1 : io_master_rlast;
     assign clint_rready = arb_rready && clint_rvalid;
     assign io_master_rready = arb_rready && io_master_rvalid;
 
@@ -467,6 +493,8 @@ module ysyx_23060000(
     localparam PERF_EVT_LSU_LOAD_DATA    = 32'd1;
     localparam PERF_EVT_LSU_STORE_DONE   = 32'd2;
     localparam PERF_EVT_EXU_DONE         = 32'd3;
+    localparam PERF_EVT_ICACHE_HIT       = 32'd4;
+    localparam PERF_EVT_ICACHE_MISS      = 32'd5;
     localparam PERF_EVT_IFU_WAIT_REQ     = 32'd10;
     localparam PERF_EVT_IFU_WAIT_RSP     = 32'd11;
     localparam PERF_EVT_IFU_WAIT_LSU_LD  = 32'd12;
@@ -524,15 +552,169 @@ module ysyx_23060000(
     end
 endmodule
 
+module simple_icache #(
+    parameter LINE_NUM = 16,
+    parameter INDEX_BITS = 4,
+    parameter WORDS_PER_LINE = 4
+)(
+    input  wire        clk,
+    input  wire        rst,
+    input  wire        cpu_arvalid,
+    output wire        cpu_arready,
+    input  wire [31:0] cpu_araddr,
+    output wire        cpu_rvalid,
+    input  wire        cpu_rready,
+    output wire [31:0] cpu_rdata,
+    output wire        mem_arvalid,
+    input  wire        mem_arready,
+    output wire [31:0] mem_araddr,
+    output wire [7:0]  mem_arlen,
+    output wire [2:0]  mem_arsize,
+    output wire [1:0]  mem_arburst,
+    input  wire        mem_rvalid,
+    output wire        mem_rready,
+    input  wire [31:0] mem_rdata,
+    input  wire        mem_rlast
+);
+    import "DPI-C" function void npc_perf_event(input int event_id, input int data);
+
+    localparam PERF_EVT_ICACHE_HIT = 32'd4;
+    localparam PERF_EVT_ICACHE_MISS = 32'd5;
+    localparam PERF_EVT_ICACHE_MISS_LAT = 32'd22;
+    localparam WORD_INDEX_BITS = 2;
+    localparam OFFSET_BITS = 2 + WORD_INDEX_BITS;
+    localparam TAG_BITS = 32 - OFFSET_BITS - INDEX_BITS;
+    localparam [1:0] LAST_WORD = 2'd3;
+    localparam ST_IDLE = 2'b00, ST_MISS_AR = 2'b01, ST_MISS_R = 2'b10, ST_RESP = 2'b11;
+
+    reg [1:0] state;
+    reg [31:0] req_addr;
+    reg [31:0] resp_data;
+    reg [31:0] miss_cycles;
+    reg [1:0]  fill_word;
+    reg        resp_valid;
+
+    reg [31:0] data_array [0:LINE_NUM-1][0:WORDS_PER_LINE-1];
+    reg [TAG_BITS-1:0] tag_array [0:LINE_NUM-1];
+    reg valid_array [0:LINE_NUM-1];
+
+    wire [INDEX_BITS-1:0] req_index = cpu_araddr[OFFSET_BITS + INDEX_BITS - 1:OFFSET_BITS];
+    wire [TAG_BITS-1:0] req_tag = cpu_araddr[31:OFFSET_BITS + INDEX_BITS];
+    wire [WORD_INDEX_BITS-1:0] req_word = cpu_araddr[3:2];
+    wire [INDEX_BITS-1:0] fill_index = req_addr[OFFSET_BITS + INDEX_BITS - 1:OFFSET_BITS];
+    wire [TAG_BITS-1:0] fill_tag = req_addr[31:OFFSET_BITS + INDEX_BITS];
+    wire [WORD_INDEX_BITS-1:0] fill_req_word = req_addr[3:2];
+    wire req_cacheable = (cpu_araddr[31:29] == 3'b101);
+    wire fill_cacheable = (req_addr[31:29] == 3'b101);
+    wire hit = req_cacheable && valid_array[req_index] && (tag_array[req_index] == req_tag);
+
+    assign cpu_arready = (state == ST_IDLE) && !resp_valid;
+    assign cpu_rvalid = resp_valid;
+    assign cpu_rdata = resp_data;
+
+    assign mem_arvalid = (state == ST_MISS_AR);
+    assign mem_araddr = fill_cacheable ? {req_addr[31:OFFSET_BITS], {OFFSET_BITS{1'b0}}} : {req_addr[31:2], 2'b00};
+    assign mem_arlen = fill_cacheable ? 8'd3 : 8'd0;
+    assign mem_arsize = 3'b010;
+    assign mem_arburst = fill_cacheable ? 2'b01 : 2'b00;
+    assign mem_rready = (state == ST_MISS_R);
+
+    integer i;
+    always @(posedge clk) begin
+        if (rst) begin
+            state <= ST_IDLE;
+            req_addr <= 32'b0;
+            resp_data <= 32'b0;
+            miss_cycles <= 32'b0;
+            fill_word <= 2'b0;
+            resp_valid <= 1'b0;
+            for (i = 0; i < LINE_NUM; i = i + 1) begin
+                valid_array[i] <= 1'b0;
+                tag_array[i] <= {TAG_BITS{1'b0}};
+                data_array[i][0] <= 32'b0;
+                data_array[i][1] <= 32'b0;
+                data_array[i][2] <= 32'b0;
+                data_array[i][3] <= 32'b0;
+            end
+        end else begin
+            if (resp_valid && cpu_rready) begin
+                resp_valid <= 1'b0;
+                if (state == ST_RESP) state <= ST_IDLE;
+            end
+
+            case (state)
+                ST_IDLE: begin
+                    if (cpu_arvalid && cpu_arready) begin
+                        req_addr <= cpu_araddr;
+                        if (hit) begin
+                            resp_data <= data_array[req_index][req_word];
+                            resp_valid <= 1'b1;
+                            npc_perf_event(PERF_EVT_ICACHE_HIT, 32'd0);
+                        end else begin
+                            npc_perf_event(PERF_EVT_ICACHE_MISS, 32'd0);
+                            miss_cycles <= 32'd1;
+                            fill_word <= 2'b0;
+                            state <= ST_MISS_AR;
+                        end
+                    end
+                end
+
+                ST_MISS_AR: begin
+                    miss_cycles <= miss_cycles + 32'd1;
+                    if (mem_arvalid && mem_arready) begin
+                        state <= ST_MISS_R;
+                    end
+                end
+
+                ST_MISS_R: begin
+                    miss_cycles <= miss_cycles + 32'd1;
+                    if (mem_rvalid && mem_rready) begin
+                        if (fill_cacheable) begin
+                            data_array[fill_index][fill_word] <= mem_rdata;
+                            tag_array[fill_index] <= fill_tag;
+                            valid_array[fill_index] <= 1'b1;
+                            if (fill_word == fill_req_word) begin
+                                resp_data <= mem_rdata;
+                            end
+                            if (mem_rlast || fill_word == LAST_WORD) begin
+                                resp_valid <= 1'b1;
+                                npc_perf_event(PERF_EVT_ICACHE_MISS_LAT, miss_cycles);
+                                state <= ST_RESP;
+                            end else begin
+                                fill_word <= fill_word + 2'd1;
+                            end
+                        end else begin
+                            resp_data <= mem_rdata;
+                            resp_valid <= 1'b1;
+                            npc_perf_event(PERF_EVT_ICACHE_MISS_LAT, miss_cycles);
+                            state <= ST_RESP;
+                        end
+                    end
+                end
+
+                ST_RESP: begin
+                    if (!resp_valid) begin
+                        state <= ST_IDLE;
+                    end
+                end
+
+                default: begin
+                    state <= ST_IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+
 // =======================================================================
 // 保留的仲裁器模块 (axi_arbiter)
 // =======================================================================
 module axi_arbiter(
     input wire clk, input wire rst,
-    input  wire        ifu_arvalid, output wire        ifu_arready, input  wire [31:0] ifu_araddr, output wire        ifu_rvalid,  input  wire        ifu_rready,  output wire [31:0] ifu_rdata,
-    input  wire        lsu_arvalid, output wire        lsu_arready, input  wire [31:0] lsu_araddr, output wire        lsu_rvalid,  input  wire        lsu_rready,  output wire [31:0] lsu_rdata,
+    input  wire        ifu_arvalid, output wire        ifu_arready, input  wire [31:0] ifu_araddr, input wire [7:0] ifu_arlen, input wire [2:0] ifu_arsize, input wire [1:0] ifu_arburst, output wire        ifu_rvalid,  input  wire        ifu_rready,  output wire [31:0] ifu_rdata, output wire ifu_rlast,
+    input  wire        lsu_arvalid, output wire        lsu_arready, input  wire [31:0] lsu_araddr, input wire [2:0] lsu_arsize, output wire        lsu_rvalid,  input  wire        lsu_rready,  output wire [31:0] lsu_rdata,
     input  wire        lsu_awvalid, output wire        lsu_awready, input  wire [31:0] lsu_awaddr, input  wire        lsu_wvalid,  output wire        lsu_wready,  input  wire [31:0] lsu_wdata, input  wire [3:0]  lsu_wstrb, output wire        lsu_bvalid,  input  wire        lsu_bready,
-    output wire        mem_arvalid, input  wire        mem_arready, output wire [31:0] mem_araddr, input  wire        mem_rvalid,  output wire        mem_rready,  input  wire [31:0] mem_rdata,
+    output wire        mem_arvalid, input  wire        mem_arready, output wire [31:0] mem_araddr, output wire [7:0] mem_arlen, output wire [2:0] mem_arsize, output wire [1:0] mem_arburst, input  wire        mem_rvalid,  output wire        mem_rready,  input  wire [31:0] mem_rdata, input wire mem_rlast,
     output wire        mem_awvalid, input  wire        mem_awready, output wire [31:0] mem_awaddr, output wire        mem_wvalid,  input  wire        mem_wready,  output wire [31:0] mem_wdata, output wire [3:0]  mem_wstrb, input  wire        mem_bvalid,  output wire        mem_bready
 );
     assign mem_awvalid = lsu_awvalid; assign lsu_awready = mem_awready; assign mem_awaddr  = lsu_awaddr;
@@ -543,16 +725,20 @@ module axi_arbiter(
         if (rst) state <= IDLE;
         else case (state)
             IDLE:      if (lsu_arvalid) state <= GRANT_LSU; else if (ifu_arvalid) state <= GRANT_IFU;
-            GRANT_LSU: if (mem_rvalid && mem_rready) state <= IDLE;
-            GRANT_IFU: if (mem_rvalid && mem_rready) state <= IDLE;
+            GRANT_LSU: if (mem_rvalid && mem_rready && mem_rlast) state <= IDLE;
+            GRANT_IFU: if (mem_rvalid && mem_rready && mem_rlast) state <= IDLE;
             default:   state <= IDLE;
         endcase
     end
     assign mem_arvalid = (state == GRANT_LSU) ? lsu_arvalid : (state == GRANT_IFU) ? ifu_arvalid : 1'b0;
     assign mem_araddr  = (state == GRANT_LSU) ? lsu_araddr  : (state == GRANT_IFU) ? ifu_araddr  : 32'b0;
+    assign mem_arlen   = (state == GRANT_LSU) ? 8'd0       : (state == GRANT_IFU) ? ifu_arlen   : 8'd0;
+    assign mem_arsize  = (state == GRANT_LSU) ? lsu_arsize  : (state == GRANT_IFU) ? ifu_arsize  : 3'b010;
+    assign mem_arburst = (state == GRANT_LSU) ? 2'b00      : (state == GRANT_IFU) ? ifu_arburst : 2'b00;
     assign lsu_arready = (state == GRANT_LSU) ? mem_arready : 1'b0; assign ifu_arready = (state == GRANT_IFU) ? mem_arready : 1'b0;
     assign mem_rready  = (state == GRANT_LSU) ? lsu_rready : (state == GRANT_IFU) ? ifu_rready : 1'b0;
     assign lsu_rvalid  = (state == GRANT_LSU) ? mem_rvalid : 1'b0; assign ifu_rvalid  = (state == GRANT_IFU) ? mem_rvalid : 1'b0;
+    assign ifu_rlast   = (state == GRANT_IFU) ? mem_rlast : 1'b0;
     assign lsu_rdata   = mem_rdata; assign ifu_rdata = mem_rdata;
 endmodule
 

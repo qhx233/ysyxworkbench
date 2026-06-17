@@ -273,6 +273,10 @@ void init_disasm() {
 }
 
 extern "C" void npc_itrace_commit(uint32_t pc, uint32_t inst, uint32_t dnpc) {
+    if (pc_trace_fp != NULL) {
+        fprintf(pc_trace_fp, "0x%08x\n", pc);
+    }
+
     #if ENABLE_ITRACE
     if (capstone_initialized) {
         cs_insn* insn;
@@ -557,6 +561,7 @@ void sdb_mainloop(){
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
   uart_debug_enabled = getenv("NPC_UART_DEBUG") != NULL;
+  const char *pc_trace_path = getenv("NPC_PC_TRACE");
   
   boot_time = get_time_internal();
 
@@ -607,6 +612,8 @@ int main(int argc, char** argv) {
 #include <errno.h>
 #include <vector>
 #include <dlfcn.h>
+
+static FILE *pc_trace_fp = NULL;
 
 extern "C" int npc_read_gpr(int idx);
 extern "C" uint32_t npc_read_pc();
@@ -844,6 +851,9 @@ void init_disasm() {
 }
 
 extern "C" void npc_itrace_commit(uint32_t pc, uint32_t inst, uint32_t dnpc) {
+    if (pc_trace_fp != NULL) {
+        fprintf(pc_trace_fp, "0x%08x\n", pc);
+    }
     #if ENABLE_ITRACE
     if (capstone_initialized) {
         cs_insn* insn;
@@ -945,12 +955,15 @@ enum {
   PERF_EVT_LSU_LOAD_DATA = 1,
   PERF_EVT_LSU_STORE_DONE = 2,
   PERF_EVT_EXU_DONE = 3,
+  PERF_EVT_ICACHE_HIT = 4,
+  PERF_EVT_ICACHE_MISS = 5,
   PERF_EVT_IFU_WAIT_REQ = 10,
   PERF_EVT_IFU_WAIT_RSP = 11,
   PERF_EVT_IFU_WAIT_LSU_LD = 12,
   PERF_EVT_IFU_WAIT_LSU_ST = 13,
   PERF_EVT_LSU_LOAD_LAT = 20,
-  PERF_EVT_LSU_STORE_LAT = 21
+  PERF_EVT_LSU_STORE_LAT = 21,
+  PERF_EVT_ICACHE_MISS_LAT = 22
 };
 
 static const char *perf_cat_name[PERF_CAT_NR] = {
@@ -963,6 +976,8 @@ static uint64_t perf_ifu_fetch = 0;
 static uint64_t perf_lsu_load_data = 0;
 static uint64_t perf_lsu_store_done = 0;
 static uint64_t perf_exu_done = 0;
+static uint64_t perf_icache_hit = 0;
+static uint64_t perf_icache_miss = 0;
 static uint64_t perf_ifu_wait_req = 0;
 static uint64_t perf_ifu_wait_rsp = 0;
 static uint64_t perf_ifu_wait_lsu_ld = 0;
@@ -971,6 +986,8 @@ static uint64_t perf_lsu_load_lat_sum = 0;
 static uint64_t perf_lsu_store_lat_sum = 0;
 static uint64_t perf_lsu_load_lat_count = 0;
 static uint64_t perf_lsu_store_lat_count = 0;
+static uint64_t perf_icache_miss_lat_sum = 0;
+static uint64_t perf_icache_miss_lat_count = 0;
 
 static uint64_t get_time_internal(){
     struct timeval now;
@@ -987,6 +1004,8 @@ static void reset_perf_stats() {
   perf_lsu_load_data = 0;
   perf_lsu_store_done = 0;
   perf_exu_done = 0;
+  perf_icache_hit = 0;
+  perf_icache_miss = 0;
   perf_ifu_wait_req = 0;
   perf_ifu_wait_rsp = 0;
   perf_ifu_wait_lsu_ld = 0;
@@ -995,6 +1014,8 @@ static void reset_perf_stats() {
   perf_lsu_store_lat_sum = 0;
   perf_lsu_load_lat_count = 0;
   perf_lsu_store_lat_count = 0;
+  perf_icache_miss_lat_sum = 0;
+  perf_icache_miss_lat_count = 0;
   boot_time = get_time_internal();
 }
 
@@ -1004,6 +1025,8 @@ extern "C" void npc_perf_event(int event, int data) {
     case PERF_EVT_LSU_LOAD_DATA:   perf_lsu_load_data++; break;
     case PERF_EVT_LSU_STORE_DONE:  perf_lsu_store_done++; break;
     case PERF_EVT_EXU_DONE:        perf_exu_done++; break;
+    case PERF_EVT_ICACHE_HIT:      perf_icache_hit++; break;
+    case PERF_EVT_ICACHE_MISS:     perf_icache_miss++; break;
     case PERF_EVT_IFU_WAIT_REQ:    perf_ifu_wait_req++; break;
     case PERF_EVT_IFU_WAIT_RSP:    perf_ifu_wait_rsp++; break;
     case PERF_EVT_IFU_WAIT_LSU_LD: perf_ifu_wait_lsu_ld++; break;
@@ -1015,6 +1038,10 @@ extern "C" void npc_perf_event(int event, int data) {
     case PERF_EVT_LSU_STORE_LAT:
       perf_lsu_store_lat_sum += (uint32_t)data;
       perf_lsu_store_lat_count++;
+      break;
+    case PERF_EVT_ICACHE_MISS_LAT:
+      perf_icache_miss_lat_sum += (uint32_t)data;
+      perf_icache_miss_lat_count++;
       break;
     default:
       break;
@@ -1036,6 +1063,12 @@ static void print_perf_stats() {
   double sim_freq = elapsed_us == 0 ? 0.0 : (double)perf_cycles / (double)elapsed_us;
   uint64_t decoded_insts = 0;
   uint64_t ifu_wait_total = perf_ifu_wait_req + perf_ifu_wait_rsp + perf_ifu_wait_lsu_ld + perf_ifu_wait_lsu_st;
+  uint64_t icache_access = perf_icache_hit + perf_icache_miss;
+  double icache_miss_rate = icache_access == 0 ? 0.0 : (double)perf_icache_miss / (double)icache_access;
+  double icache_access_time = 1.0;
+  double icache_avg_miss_penalty =
+    perf_icache_miss_lat_count == 0 ? 0.0 : (double)perf_icache_miss_lat_sum / (double)perf_icache_miss_lat_count;
+  double icache_amat = icache_access_time + icache_miss_rate * icache_avg_miss_penalty;
 
   printf("========== NPC Performance ==========\n");
   printf("cycles        : %llu\n", (unsigned long long)perf_cycles);
@@ -1049,6 +1082,17 @@ static void print_perf_stats() {
   printf("LSU load data : %llu\n", (unsigned long long)perf_lsu_load_data);
   printf("LSU store done: %llu\n", (unsigned long long)perf_lsu_store_done);
   printf("EXU done      : %llu\n", (unsigned long long)perf_exu_done);
+  printf("I$ hit        : %llu\n", (unsigned long long)perf_icache_hit);
+  printf("I$ miss       : %llu\n", (unsigned long long)perf_icache_miss);
+  printf("I$ hit rate   : %.2f%%\n",
+         icache_access == 0 ? 0.0 : 100.0 * (double)perf_icache_hit / (double)icache_access);
+  printf("---------- I-cache AMAT --------------\n");
+  printf("I$ access time: %.3f cycles\n", icache_access_time);
+  printf("I$ miss avg   : %.3f cycles (%llu samples)\n",
+         icache_avg_miss_penalty,
+         (unsigned long long)perf_icache_miss_lat_count);
+  printf("I$ TMT        : %llu cycles\n", (unsigned long long)perf_icache_miss_lat_sum);
+  printf("I$ AMAT       : %.3f cycles/access\n", icache_amat);
   printf("---------- instruction mix -----------\n");
   for (int i = 0; i < PERF_CAT_NR; i++) {
     decoded_insts += perf_cat_count[i];
@@ -1088,6 +1132,12 @@ static void print_perf_stats() {
   printf("IFU fetch == inst    : %s (%llu vs %llu)\n",
          perf_ifu_fetch == perf_insts ? "PASS" : "FAIL",
          (unsigned long long)perf_ifu_fetch, (unsigned long long)perf_insts);
+  printf("I$ access == IFU     : %s (%llu vs %llu)\n",
+         icache_access == perf_ifu_fetch ? "PASS" : "FAIL",
+         (unsigned long long)icache_access, (unsigned long long)perf_ifu_fetch);
+  printf("I$ miss lat samples  : %s (%llu vs %llu)\n",
+         perf_icache_miss_lat_count == perf_icache_miss ? "PASS" : "FAIL",
+         (unsigned long long)perf_icache_miss_lat_count, (unsigned long long)perf_icache_miss);
   printf("LOAD count == LSU LD : %s (%llu vs %llu)\n",
          perf_cat_count[PERF_CAT_LOAD] == perf_lsu_load_data ? "PASS" : "FAIL",
          (unsigned long long)perf_cat_count[PERF_CAT_LOAD], (unsigned long long)perf_lsu_load_data);
@@ -1342,6 +1392,7 @@ void sdb_mainloop(){
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
   uart_debug_enabled = getenv("NPC_UART_DEBUG") != NULL;
+  const char *pc_trace_path = getenv("NPC_PC_TRACE");
   
   boot_time = get_time_internal();
 
@@ -1356,11 +1407,22 @@ int main(int argc, char** argv) {
           flash_boot = true;
       } else if (strcmp(argv[i], "--no-difftest") == 0) {
           ref_so_file = NULL;
+      } else if (strcmp(argv[i], "--pc-trace") == 0 && i + 1 < argc) {
+          pc_trace_path = argv[++i];
       } else if (img_file == NULL) {
           img_file = argv[i];
       } else if (elf_file == NULL) {
           elf_file = argv[i];
       }
+  }
+
+  if (pc_trace_path != NULL && pc_trace_path[0] != '\0') {
+      pc_trace_fp = fopen(pc_trace_path, "w");
+      if (pc_trace_fp == NULL) {
+          perror("open pc trace");
+          assert(0);
+      }
+      printf("[NPC] PC trace will be written to %s\n", pc_trace_path);
   }
 
   init_flash();
@@ -1386,6 +1448,11 @@ int main(int argc, char** argv) {
   }
 
   print_perf_stats();
+
+  if (pc_trace_fp != NULL) {
+      fclose(pc_trace_fp);
+      pc_trace_fp = NULL;
+  }
 
 #ifdef ENABLE_NVBOARD
   nvboard_quit();
