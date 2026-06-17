@@ -13,80 +13,104 @@
 * See the Mulan PSL v2 for more details.
 ***************************************************************************************/
 
+#include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
-#include <assert.h>
 #include <string.h>
+#include <time.h>
 
 // this should be enough
 static char buf[65536] = {};
-static char code_buf[65536 + 128] = {}; // a little larger than `buf`
-static char *code_format =
-"#include <stdio.h>\n"
-"int main() { "
-"  unsigned result = %s; "
-"  printf(\"%%u\", result); "
-"  return 0; "
-"}";
+static char *buf_p = buf;
+static char *buf_end = buf + sizeof(buf);
 
 
 static inline uint32_t choose(uint32_t n) {
   return rand() % n;
 }
 
-#define MAX_DEPTH 3
-static int current_depth = 0;
+#define MAX_DEPTH 8
+#define MAX_RETRY 1000
 
-// 递归生成主体
-static void gen_rand_expr_recursive() {
-  if (current_depth > MAX_DEPTH) {
-    // 达到最大深度，强制生成纯数字（1到100）
-    sprintf(buf + strlen(buf), "%u", choose(100) + 1);
-    return;
+static bool append(const char *s) {
+  size_t len = strlen(s);
+  if (buf_p + len >= buf_end) {
+    return false;
   }
-
-  current_depth++;
-
-  switch (choose(3)) {
-    case 0: 
-      sprintf(buf + strlen(buf), "%u", choose(100) + 1);
-      break;
-
-    case 1: 
-      sprintf(buf + strlen(buf), "(");
-      // 随机插入空格，疯狂测试你写的 make_token 健壮性
-      for (int i = 0; i < choose(3); i++) sprintf(buf + strlen(buf), " ");
-      
-      gen_rand_expr_recursive();
-      
-      for (int i = 0; i < choose(3); i++) sprintf(buf + strlen(buf), " ");
-      sprintf(buf + strlen(buf), ")");
-      break;
-
-    default: 
-      gen_rand_expr_recursive();
-      
-      // 注意：这里故意移除了除号 '/' !
-      // 因为随机生成的表达式极容易出现除以 0，这会导致 gcc 编译后的程序运行时触发 SIGFPE 崩溃，
-      // 进而导致 popen 读不到数据，中断整个测试过程。先用加减乘保证框架能跑通。
-      char op = "*-+"[choose(3)]; 
-      
-      sprintf(buf + strlen(buf), " %c ", op);
-      
-      gen_rand_expr_recursive();
-      break;
-  }
-
-  current_depth--;
+  memcpy(buf_p, s, len);
+  buf_p += len;
+  *buf_p = '\0';
+  return true;
 }
 
+static bool gen_spaces() {
+  int n = choose(4);
+  while (n-- > 0) {
+    if (!append(" ")) {
+      return false;
+    }
+  }
+  return true;
+}
 
-static void gen_rand_expr() {
+static bool gen_num(uint32_t *val) {
+  char num[32];
+  *val = choose(UINT32_MAX);
+  snprintf(num, sizeof(num), "%u", *val);
+  return gen_spaces() && append(num) && gen_spaces();
+}
+
+static bool gen_rand_expr_recursive(int depth, uint32_t *val) {
+  if (depth >= MAX_DEPTH) {
+    return gen_num(val);
+  }
+
+  switch (choose(3)) {
+    case 0:
+      return gen_num(val);
+
+    case 1:
+      return gen_spaces()
+          && append("(")
+          && gen_rand_expr_recursive(depth + 1, val)
+          && append(")")
+          && gen_spaces();
+
+    default: {
+      uint32_t val1 = 0;
+      uint32_t val2 = 0;
+      char op = "+-*/"[choose(4)];
+
+      if (!gen_rand_expr_recursive(depth + 1, &val1)
+          || !gen_spaces()
+          || !append((char []){op, '\0'})
+          || !gen_spaces()
+          || !gen_rand_expr_recursive(depth + 1, &val2)) {
+        return false;
+      }
+
+      switch (op) {
+        case '+': *val = val1 + val2; return true;
+        case '-': *val = val1 - val2; return true;
+        case '*': *val = val1 * val2; return true;
+        case '/':
+          if (val2 == 0) {
+            return false;
+          }
+          *val = val1 / val2;
+          return true;
+        default: assert(0);
+      }
+    }
+  }
+}
+
+static bool gen_rand_expr(uint32_t *val) {
   buf[0] = '\0';
-  current_depth = 0;
-  gen_rand_expr_recursive();
+  buf_p = buf;
+  return gen_rand_expr_recursive(0, val);
 }
 
 int main(int argc, char *argv[]) {
@@ -98,24 +122,15 @@ int main(int argc, char *argv[]) {
   }
   int i;
   for (i = 0; i < loop; i ++) {
-    gen_rand_expr();
-
-    sprintf(code_buf, code_format, buf);
-
-    FILE *fp = fopen("/tmp/.code.c", "w");
-    assert(fp != NULL);
-    fputs(code_buf, fp);
-    fclose(fp);
-
-    int ret = system("gcc /tmp/.code.c -o /tmp/.expr");
-    if (ret != 0) continue;
-
-    fp = popen("/tmp/.expr", "r");
-    assert(fp != NULL);
-
-    int result;
-    ret = fscanf(fp, "%d", &result);
-    pclose(fp);
+    uint32_t result = 0;
+    int retry = 0;
+    while (!gen_rand_expr(&result)) {
+      retry++;
+      if (retry > MAX_RETRY) {
+        fprintf(stderr, "failed to generate a valid expression\n");
+        return 1;
+      }
+    }
 
     printf("%u %s\n", result, buf);
   }

@@ -132,8 +132,7 @@ static bool make_token(char *e) {
           case TK_NOTYPE: break;
           default: 
           if (nr_token >= MAX_TOKENS) {
-              printf("Error: Too many tokens (max 32)!\n");
-              assert(0);
+              printf("Error: Too many tokens (max %d)!\n", MAX_TOKENS);
               return false;
             }
 
@@ -147,7 +146,6 @@ static bool make_token(char *e) {
               // 终极防御 2：防止单个 Token 字符串过长导致缓冲区溢出
               if (substr_len >= 32) {
                 printf("Error: Token string too long!\n");
-                assert(0);
                 return false;
               }
               strncpy(tokens[nr_token].str, substr_start, substr_len);
@@ -221,8 +219,7 @@ static int find_main_operator(int p, int q) {
         default: precedence = 100; break; // 非运算符
       }
 
-      if (precedence < min_precedence|| 
-         (precedence == min_precedence && precedence != 6)) {
+      if (precedence < min_precedence || (precedence == min_precedence && precedence != 7)) {
         min_precedence = precedence;
         main_op = i;
       }
@@ -232,7 +229,7 @@ static int find_main_operator(int p, int q) {
   return main_op;
 }
 
-static uint32_t eval(int p, int q,bool *success) {
+static uint32_t eval(int p, int q, bool *success) {
   if(*success == false) {
     return 0;
   }
@@ -242,7 +239,7 @@ static uint32_t eval(int p, int q,bool *success) {
   } else if (p == q) {
     // 单个 token
     if (tokens[p].type == TK_NUM) {
-      return atoi(tokens[p].str);
+      return strtoul(tokens[p].str, NULL, 10);
     } else if (tokens[p].type == TK_HEX) {
       return strtoul(tokens[p].str, NULL, 16);
     } else if (tokens[p].type == TK_REG) {
@@ -263,11 +260,14 @@ static uint32_t eval(int p, int q,bool *success) {
       printf("No operator found in expression!\n");
       assert(0);
     }
-    int val1 = 0;
+    uint32_t val1 = 0;
     if (tokens[op].type != TK_NEG && tokens[op].type != TK_DEREF) {
        val1 = eval(p, op - 1, success);
     }
-    int val2 = eval(op + 1, q, success);
+    uint32_t val2 = eval(op + 1, q, success);
+    if (*success == false) {
+      return 0;
+    }
 
     switch (tokens[op].type) {
       case TK_OR: return val1 || val2;
@@ -283,9 +283,9 @@ static uint32_t eval(int p, int q,bool *success) {
       case '*': return val1 * val2;
       case '/': 
         if (val2 == 0) {
-
           printf("Error: Division by zero!\n");
-          assert(0);
+          *success = false;
+          return 0;
         }
         return val1 / val2;
       case TK_NEG: return -val2; // 负号
