@@ -74,7 +74,7 @@ void free_wp(WP *wp) {
     while (prev->next != NULL && prev->next != wp) {
       prev = prev->next;
     }
-    assert(prev->next != wp); // Ensure that wp is in the list
+    assert(prev->next == wp); // Ensure that wp is in the list
     if (prev->next == wp) {
       prev->next = wp->next;
     }

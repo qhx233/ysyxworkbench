@@ -83,11 +83,15 @@ static bool gen_rand_expr_recursive(int depth, uint32_t *val) {
       uint32_t val2 = 0;
       char op = "+-*/"[choose(4)];
 
-      if (!gen_rand_expr_recursive(depth + 1, &val1)
+      if (!gen_spaces()
+          || !append("(")
+          || !gen_rand_expr_recursive(depth + 1, &val1)
           || !gen_spaces()
           || !append((char []){op, '\0'})
           || !gen_spaces()
-          || !gen_rand_expr_recursive(depth + 1, &val2)) {
+          || !gen_rand_expr_recursive(depth + 1, &val2)
+          || !append(")")
+          || !gen_spaces()) {
         return false;
       }
 

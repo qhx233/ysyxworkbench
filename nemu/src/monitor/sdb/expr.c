@@ -94,6 +94,7 @@ void init_regex() {
       panic("regex compilation failed: %s\n%s", error_msg, rules[i].regex);
     }
   }
+  
 }
 
 typedef struct token {
@@ -336,10 +337,10 @@ void test_expr() {
   // 1. 打开你刚刚生成的 input 文件
   // 注意：NEMU 通常是在 nemu/ 目录下执行 make run 的，
   // 所以相对路径一般是下面这样。如果找不到，可以用绝对路径。
-  FILE *fp = fopen("tools/gen-expr/input", "r");
+  FILE *fp = fopen("tools/gen-expr/build/input", "r");
   if (fp == NULL) {
     // 如果没找到文件，就静默返回，不影响正常的 NEMU 运行
-    printf("[Warning] 'tools/gen-expr/input' not found. Skip expression testing.\n");
+    printf("[Warning] 'tools/gen-expr/build/input' not found. Skip expression testing.\n");
     return;
   }
 

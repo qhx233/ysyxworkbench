@@ -143,6 +143,11 @@ static int cmd_p(char *args) {
   return 0;
 }
 
+static int cmd_exprtest(char *args) {
+  test_expr();
+  return 0;
+}
+
 static struct {
   const char *name;
   const char *description;
@@ -159,6 +164,7 @@ static struct {
   { "p", "Print the value of an expression. Usage: p EXPR", cmd_p },
   { "w", "Add a watchpoint. Usage: w EXPR", cmd_w },
   { "d", "Delete a watchpoint. Usage: d NO", cmd_d },
+  { "exprtest", "Run generated expression tests from tools/gen-expr/input", cmd_exprtest },
 };
 
 #define NR_CMD ARRLEN(cmd_table)
