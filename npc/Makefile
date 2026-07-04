@@ -2,7 +2,7 @@ TOPNAME = ysyxSoCFull
 NXDC_FILES = constr/$(TOPNAME).nxdc
 INC_PATH ?=
 
-YSYXSOC_HOME = /home/vboxuser/clip/ysyx-workbench/ysyxSoC
+YSYXSOC_HOME ?= $(abspath ../ysyxSoC)
 
 VERILATOR = verilator
 # 加入了 --trace，保证仿真时能生成波形

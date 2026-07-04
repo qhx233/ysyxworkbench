@@ -72,7 +72,7 @@ module ysyx_00000000(
     output [ 3:0] io_slave_rid
 );
 
-  ysyx_23060000 cpu (
+  ysyx_26060181 cpu (
     .clock(clock),
     .reset(reset),
     .io_interrupt(io_interrupt),
