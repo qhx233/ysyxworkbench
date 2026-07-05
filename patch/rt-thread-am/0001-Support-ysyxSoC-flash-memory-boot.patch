@@ -1,0 +1,276 @@
+From 3957c290f3866c03ca628b85fc1cbe508a4a6890 Mon Sep 17 00:00:00 2001
+From: ysyx_26060181 <ysyx_26060181@example.com>
+Date: Sat, 4 Jul 2026 21:54:58 +0800
+Subject: [PATCH] Support ysyxSoC flash memory boot
+
+---
+ bsp/abstract-machine/Makefile       |  6 ++
+ bsp/abstract-machine/extra-psram.ld | 43 +++++++++++++
+ bsp/abstract-machine/extra-sdram.ld | 43 +++++++++++++
+ bsp/abstract-machine/src/context.c  | 95 +++++++++++++++++++++++++++--
+ bsp/abstract-machine/src/uart.c     |  8 ++-
+ 5 files changed, 190 insertions(+), 5 deletions(-)
+ create mode 100644 bsp/abstract-machine/extra-psram.ld
+ create mode 100644 bsp/abstract-machine/extra-sdram.ld
+
+diff --git a/bsp/abstract-machine/Makefile b/bsp/abstract-machine/Makefile
+index 8d70f310b..0a504c7aa 100644
+--- a/bsp/abstract-machine/Makefile
++++ b/bsp/abstract-machine/Makefile
+@@ -8,7 +8,13 @@ NAME = rtthread
+ SRCS = $(shell find src -name "*.c")
+ CFLAGS += -DHAVE_CCONFIG_H -D__RTTHREAD__
+ CFLAGS += -Wno-nonnull-compare
++ifeq ($(ARCH),riscv32e-ysyxsoc-flash-psram)
++LDFLAGS += -T extra-psram.ld
++else ifeq ($(ARCH),riscv32e-ysyxsoc-flash-sdram)
++LDFLAGS += -T extra-sdram.ld
++else
+ LDFLAGS += -T extra.ld
++endif
+ -include $(FILE_MK)
+ -include $(AM_APPS_MK)
+ include $(AM_HOME)/Makefile
+diff --git a/bsp/abstract-machine/extra-psram.ld b/bsp/abstract-machine/extra-psram.ld
+new file mode 100644
+index 000000000..c2006a798
+--- /dev/null
++++ b/bsp/abstract-machine/extra-psram.ld
+@@ -0,0 +1,43 @@
++SECTIONS {
++  .data.extra : {
++    . = ALIGN(8);
++    __fsymtab_start = .;
++    KEEP(*(FSymTab))
++    __fsymtab_end = .;
++    . = ALIGN(8);
++    __vsymtab_start = .;
++    KEEP(*(VSymTab))
++    __vsymtab_end = .;
++    . = ALIGN(8);
++
++    __rt_init_start = .;
++    KEEP(*(SORT(.rti_fn*)))
++    __rt_init_end = .;
++    . = ALIGN(8);
++
++    __rt_utest_tc_tab_start = .;
++    KEEP(*(UtestTcTab))
++    __rt_utest_tc_tab_end = .;
++
++    . = ALIGN(8);
++    __am_apps_data_start = .;
++    *(__am_apps.data*)
++    *(__am_apps.sdata*)
++    __am_apps_data_end = .;
++    . = ALIGN(8);
++  } > psram AT> flash
++}
++INSERT BEFORE .data;
++
++SECTIONS {
++  .bss.extra (NOLOAD) : {
++    . = ALIGN(8);
++    __am_apps_bss_start = .;
++    *(__am_apps.bss*)
++    *(__am_apps.sbss*)
++    *(__am_apps.scommon*)
++    __am_apps_bss_end = .;
++    . = ALIGN(8);
++  } > psram
++}
++INSERT BEFORE .bss;
+diff --git a/bsp/abstract-machine/extra-sdram.ld b/bsp/abstract-machine/extra-sdram.ld
+new file mode 100644
+index 000000000..0ece875fa
+--- /dev/null
++++ b/bsp/abstract-machine/extra-sdram.ld
+@@ -0,0 +1,43 @@
++SECTIONS {
++  .data.extra : {
++    . = ALIGN(8);
++    __fsymtab_start = .;
++    KEEP(*(FSymTab))
++    __fsymtab_end = .;
++    . = ALIGN(8);
++    __vsymtab_start = .;
++    KEEP(*(VSymTab))
++    __vsymtab_end = .;
++    . = ALIGN(8);
++
++    __rt_init_start = .;
++    KEEP(*(SORT(.rti_fn*)))
++    __rt_init_end = .;
++    . = ALIGN(8);
++
++    __rt_utest_tc_tab_start = .;
++    KEEP(*(UtestTcTab))
++    __rt_utest_tc_tab_end = .;
++
++    . = ALIGN(8);
++    __am_apps_data_start = .;
++    *(__am_apps.data*)
++    *(__am_apps.sdata*)
++    __am_apps_data_end = .;
++    . = ALIGN(8);
++  } > sdram AT> flash
++}
++INSERT BEFORE .data;
++
++SECTIONS {
++  .bss.extra (NOLOAD) : {
++    . = ALIGN(8);
++    __am_apps_bss_start = .;
++    *(__am_apps.bss*)
++    *(__am_apps.sbss*)
++    *(__am_apps.scommon*)
++    __am_apps_bss_end = .;
++    . = ALIGN(8);
++  } > sdram
++}
++INSERT BEFORE .bss;
+diff --git a/bsp/abstract-machine/src/context.c b/bsp/abstract-machine/src/context.c
+index ee38829ae..a8a40bfb4 100644
+--- a/bsp/abstract-machine/src/context.c
++++ b/bsp/abstract-machine/src/context.c
+@@ -2,8 +2,52 @@
+ #include <klib.h>
+ #include <rtthread.h>
+ 
++struct switch_args {
++    Context **from;
++    Context **to;
++};
++static struct switch_args boot_args;
++
++struct rt_thread_wrapper_arg{
++  void (*tentry)(void * );
++  void *parameter;
++  void (*texit)(void );
++};
++
++static void rt_thread_wrapper(void *arg){
++  struct rt_thread_wrapper_arg *wrapper_arg = (struct rt_thread_wrapper_arg *)arg;
++  void (*tentry)(void * ) = wrapper_arg->tentry;
++  void *parameter = wrapper_arg->parameter;
++  void (*texit)(void ) = wrapper_arg->texit;
++  tentry(parameter);
++  texit();
++  assert(0);
++}
++
+ static Context* ev_handler(Event e, Context *c) {
+   switch (e.event) {
++    case EVENT_YIELD:{
++   rt_thread_t thread = rt_thread_self();
++      struct switch_args *args;
++
++      // 修复 3：防段错误！如果当前没有线程（开机阶段），去读 boot_args
++      if (thread == NULL) {
++        args = &boot_args;
++      } else {
++        args = (struct switch_args *)(thread->user_data);
++      }
++
++      // 执行上下文的保存与切换
++      if (args->from != NULL) {
++        *(args->from) = c; // 保存当前现场
++      }
++      Context *next_c = *(args->to); // 提取目标现场
++      return next_c;
++    }
++    case EVENT_IRQ_TIMER:
++      // 暂时不处理时钟中断，直接返回当前上下文，让当前线程继续跑
++      return c;
++    
+     default: printf("Unhandled event ID = %d\n", e.event); assert(0);
+   }
+   return c;
+@@ -14,11 +58,43 @@ void __am_cte_init() {
+ }
+ 
+ void rt_hw_context_switch_to(rt_ubase_t to) {
+-  assert(0);
++rt_thread_t thread = rt_thread_self();
++  
++  if (thread == NULL) {
++    // 刚开机，没有当前线程！借用一下特例信箱
++    boot_args.from = NULL;
++    boot_args.to = (Context **)to;
++    yield(); 
++  } else {
++    // 理论上 switch_to 不应该在有线程运行时被调用，但为了严谨
++    struct switch_args args;
++    args.from = NULL; 
++    args.to = (Context **)to;
++    thread->user_data = (rt_ubase_t)&args;
++    yield();
++  }
+ }
+ 
+ void rt_hw_context_switch(rt_ubase_t from, rt_ubase_t to) {
+-  assert(0);
++rt_thread_t thread = rt_thread_self();
++  
++  // 1. 备份原有的 user_data（保护现场！）
++  rt_ubase_t old_user_data = thread->user_data;
++
++  // 2. 在当前线程的私有栈上，临时打包参数
++  struct switch_args args;
++  args.from = (Context **)from;
++  args.to = (Context **)to;
++
++  // 3. 将栈上参数的地址塞进 PCB
++  thread->user_data = (rt_ubase_t)&args;
++
++  // 4. 引爆自陷，穿越叹息之墙！
++  yield();
++
++  // 5. 时空旅行结束。当前线程再次被调度时，代码会从这里继续执行。
++  // 此时，立刻归还 user_data，做到真正的“来无影去无踪”！
++  thread->user_data = old_user_data;
+ }
+ 
+ void rt_hw_context_switch_interrupt(void *context, rt_ubase_t from, rt_ubase_t to, struct rt_thread *to_thread) {
+@@ -26,6 +102,17 @@ void rt_hw_context_switch_interrupt(void *context, rt_ubase_t from, rt_ubase_t t
+ }
+ 
+ rt_uint8_t *rt_hw_stack_init(void *tentry, void *parameter, rt_uint8_t *stack_addr, void *texit) {
+-  assert(0);
+-  return NULL;
++  uintptr_t stack_top = (uintptr_t)stack_addr;
++  stack_top &= ~7;
++  stack_top -= sizeof(struct rt_thread_wrapper_arg);
++  struct rt_thread_wrapper_arg *args = (struct rt_thread_wrapper_arg *)stack_top;
++  args->tentry = tentry;
++  args->parameter = parameter;
++  args->texit = texit;
++  Area kstack;
++  kstack.start = (void *)0;
++  kstack.end = (void *)stack_top;
++  Context *c = kcontext(kstack, rt_thread_wrapper, args);
++  return (rt_uint8_t *)c;
++
+ }
+diff --git a/bsp/abstract-machine/src/uart.c b/bsp/abstract-machine/src/uart.c
+index e4eb86689..9dfb35f03 100644
+--- a/bsp/abstract-machine/src/uart.c
++++ b/bsp/abstract-machine/src/uart.c
+@@ -38,7 +38,13 @@ static int _uart_putc(struct rt_serial_device *serial, char c) {
+ 
+ static int _uart_getc(struct rt_serial_device *serial) {
+   static const char *p = "help\ndate\nversion\nfree\nps\npwd\nls\nmemtrace\nmemcheck\nutest_list\n";
+-  return (*p != '\0' ? *(p ++) : -1);
++  if (*p != '\0') {
++    return *(p ++);
++  }
++
++  AM_UART_RX_T rx;
++  ioe_read(AM_UART_RX, &rx);
++  return rx.data == (char)-1 ? -1 : (unsigned char)rx.data;
+ }
+ 
+ const struct rt_uart_ops _uart_ops = {
+-- 
+2.34.1
+
