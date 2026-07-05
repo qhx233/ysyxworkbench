@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ysyx_26060181 <ysyx_26060181@example.com>
+Date: Sun, 5 Jul 2026 15:40:00 +0800
+Subject: [PATCH] Skip fceux-am when integrating RT-Thread AM apps
+
+fceux-am requires external NES ROM files to generate roms.h.  The basic
+RT-Thread reproduction does not need it, so keep the built-in shell apps
+limited to AM kernels that can be cloned and built directly.
+---
+ bsp/abstract-machine/integrate-am-apps.py | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/bsp/abstract-machine/integrate-am-apps.py b/bsp/abstract-machine/integrate-am-apps.py
+index 8968df3..bb86a95 100644
+--- a/bsp/abstract-machine/integrate-am-apps.py
++++ b/bsp/abstract-machine/integrate-am-apps.py
+@@ -11,7 +11,6 @@ app_dir_list = [
+   AM_KERNELS_HOME / "benchmarks" / "microbench",
+   AM_KERNELS_HOME / "kernels" / "typing-game",
+   AM_KERNELS_HOME / "kernels" / "snake",
+-  AM_KERNELS_HOME / ".." / "fceux-am",
+ ]
+ 
+ if len(sys.argv) != 3:
+-- 
+2.34.1
+
