@@ -42,7 +42,7 @@ run: insert-arg
 	@echo "[ysyxSoC flash->psram] 正在运行: $(IMAGE_REL).bin"
 	@echo "--------------------------------------------------"
 ifeq ($(NO_DIFFTEST),1)
-	$(MAKE) -C $(NPC_HOME) sim IMG=$(IMAGE).bin ARGS="--flash-boot --no-difftest -b"
+	$(MAKE) -C $(NPC_HOME) sim IMG="$(IMAGE).bin $(IMAGE).elf" ARGS="--flash-boot --no-difftest -b"
 else
-	$(MAKE) -C $(NPC_HOME) sim IMG=$(IMAGE).bin ARGS="--flash-boot -b"
+	$(MAKE) -C $(NPC_HOME) sim IMG="$(IMAGE).bin $(IMAGE).elf" ARGS="--flash-boot -b"
 endif

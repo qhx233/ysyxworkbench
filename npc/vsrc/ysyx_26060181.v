@@ -350,7 +350,7 @@ module ysyx_26060181(
                                       (funct3 == 3'b100 && alu_lt) || (funct3 == 3'b101 && !alu_lt) || 
                                       (funct3 == 3'b110 && alu_ltu) || (funct3 == 3'b111 && !alu_ltu));
 
-    wire [31:0] snpc = pc + 32'h4;       // 顺序下一条指令地址
+    wire [31:0] snpc = pc + 32'h8;       // 顺序下一条指令地址
     wire [31:0] csr_mtvec, csr_mepc;     // CSR 模块输出的 trap 入口和异常返回地址
     wire is_ecall = op_system && (funct3 == 3'b000) && (inst[31:20] == 12'b0); // ECALL 指令
     wire is_mret  = op_system && (funct3 == 3'b000) && (inst[31:20] == 12'b001100000010); // MRET 指令

@@ -44,4 +44,4 @@ run: insert-arg
 	@echo "--------------------------------------------------"
 	@echo "[ysyxSoC] 正在运行: $(IMAGE_REL).bin"
 	@echo "--------------------------------------------------"
-	$(MAKE) -C $(NPC_HOME) sim IMG=$(IMAGE).bin ARGS="-b"
+	$(MAKE) -C $(NPC_HOME) sim IMG="$(IMAGE).bin $(IMAGE).elf" ARGS="-b"

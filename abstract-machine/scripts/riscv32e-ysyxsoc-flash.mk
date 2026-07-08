@@ -34,4 +34,4 @@ run: insert-arg
 	@echo "--------------------------------------------------"
 	@echo "[ysyxSoC flash] 正在运行: $(IMAGE_REL).bin"
 	@echo "--------------------------------------------------"
-	$(MAKE) -C $(NPC_HOME) sim IMG=$(IMAGE).bin ARGS="--flash-boot -b"
+	$(MAKE) -C $(NPC_HOME) sim IMG="$(IMAGE).bin $(IMAGE).elf" ARGS="--flash-boot -b"

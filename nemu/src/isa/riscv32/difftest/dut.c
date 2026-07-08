@@ -24,8 +24,8 @@ bool isa_difftest_checkregs(CPU_state *ref_r, vaddr_t pc) {
       return false;
   }
 
-  // 2. 遍历检查 32 个通用寄存器
-  for (int i = 0; i < 32; i++) {
+  // 2. 遍历检查通用寄存器; RV32E 只有 x0~x15.
+  for (int i = 0; i < MUXDEF(CONFIG_RVE, 16, 32); i++) {
       if (cpu.gpr[i] != ref_r->gpr[i]) {
           Log("DiffTest failed: Register [%s] mismatch at pc = " FMT_PADDR, regs[i], pc);
           Log("NEMU %s: 0x%08x | REF %s: 0x%08x", regs[i], cpu.gpr[i], regs[i], ref_r->gpr[i]);

@@ -52,7 +52,8 @@ CSRCS = $(shell find $(abspath ./csrc) -maxdepth 1 -name "*.c" -or -name "*.cc" 
 CSRCS += $(SRC_AUTO_BIND)
 
 include $(NVBOARD_HOME)/scripts/nvboard.mk
-LDFLAGS += -lcapstone  -lelf -ldl
+CAPSTONE_LIB ?= /lib/libcapstone.so.5
+LDFLAGS += $(CAPSTONE_LIB) -lelf -ldl
 INCFLAGS = $(addprefix -I, $(INC_PATH))
 CXXFLAGS += $(INCFLAGS) -DTOP_NAME="\"V$(TOPNAME)\""
 
@@ -60,11 +61,9 @@ $(BIN): CXXFLAGS += -DENABLE_NVBOARD
 $(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE)
 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
-		--top-module $(TOPNAME) $^ \
-		$(addprefix -CFLAGS , $(CXXFLAGS)) $(addprefix -LDFLAGS , $(LDFLAGS)) \
-		-LDFLAGS -L/usr/lib \
-		-LDFLAGS -lcapstone \
-		--Mdir $(OBJ_DIR) --exe -o $(abspath $(BIN))
+			--top-module $(TOPNAME) $^ \
+			$(addprefix -CFLAGS , $(CXXFLAGS)) $(addprefix -LDFLAGS , $(LDFLAGS)) \
+			--Mdir $(OBJ_DIR) --exe -o $(abspath $(BIN))
 
 # --- 纯仿真 (Sim) 相关的构建 ---
 # [核心修复 3]：直接写死主函数路径，不再去不存在的 sim 目录找了！

@@ -40,6 +40,7 @@ static uint16_t uart_rx_frame = 0x3ff;    // 正在发送到 RX 引脚的 8N1 �
 static int uart_rx_bits = 0;              // 当前帧还剩多少 bit 没有发完
 static int uart_rx_ticks = 0;             // 当前 bit 还需要维持多少周期
 static bool uart_debug_enabled = false;   // 是否打印 stdin->UART RX 的调试日志
+static bool uart_stdin_requested = false; // 是否把 host stdin 注入到 guest UART RX
 
 static void init_uart_stdin() {
   if (uart_stdin_inited) return;
@@ -188,7 +189,10 @@ svScope get_dpi_scope() {
 }
 
 void init_elf(const char *elf_file) {
-    if(elf_file == NULL)return;                             // 没传 ELF 时不启用 ftrace 符号解析
+    if(elf_file == NULL){
+        printf("FTRACE: No ELF file provided, function names will be shown as ???\n");
+        return;                                             // 没传 ELF 时不启用 ftrace 符号解析
+    }
     int fd = open(elf_file, O_RDONLY);                      // 打开 ELF 文件
     if(fd < 0){perror("open elf"); return;}                 // 打不开就放弃 ftrace, 不影响仿真主体
     elf_version(EV_CURRENT);                                // 初始化 libelf 版本
@@ -248,8 +252,9 @@ static bool capstone_initialized = false;                   // 标记 Capstone �
 void init_disasm() {
     cs_err err = cs_open(CS_ARCH_RISCV, CS_MODE_RISCV32, &capstone_handle); // 创建 RISC-V 32 位反汇编器
     if (err != CS_ERR_OK) {
-        printf("ERROR: Capstone init failed: %s\n", cs_strerror(err));
-        return;                                             // 初始化失败时只是不打印 itrace, 不阻塞仿真
+        printf("WARNING: Capstone RISC-V init failed: %s, itrace will print raw instructions only.\n",
+               cs_strerror(err));
+        return;                                             // 初始化失败时仍打印 raw itrace, 不阻塞仿真
     }
     capstone_initialized = true;                            // 后续 itrace 可以调用 cs_disasm
     printf("Capstone initialized successfully.\n");
@@ -269,6 +274,8 @@ extern "C" void npc_itrace_commit(uint32_t pc, uint32_t inst, uint32_t dnpc) {
         } else {
             printf("[ITRACE] 0x%08x: %08x    (Unknown Instruction)\n", pc, inst);
         }
+    } else {
+        printf("[ITRACE] 0x%08x: %08x    -> 0x%08x\n", pc, inst, dnpc);
     }
     #endif
 
@@ -284,7 +291,7 @@ extern "C" void npc_itrace_commit(uint32_t pc, uint32_t inst, uint32_t dnpc) {
         ftrace_print(pc, dnpc, true);                       // 写 ra 的跳转视为函数调用
     }
     else if (is_jalr && (rs1 == 1) && (rd == 0)) {
-        ftrace_print(pc, dnpc, false);                      // jalr x0, ra, imm 视为函数返回
+        ftrace_print(pc, pc, false);                        // ret 从当前 PC 所在函数返回
     }
     #endif
 }
@@ -327,6 +334,11 @@ void init_difftest(const char *ref_so_file, long img_size) {
 
 void checkregs(diff_context_t * ref) {
     bool mismatch = false;                                   // 记录是否发现寄存器不一致
+    uint32_t dut_pc = npc_read_pc();
+    if (dut_pc != ref->pc) {
+        mismatch = true;
+        printf("PC mismatch: NPC=0x%08x, REF=0x%08x\n", dut_pc, ref->pc);
+    }
     for(int i = 0; i < 16; i++){
             if(npc_read_gpr(i) != ref->gpr[i]) {
                 mismatch = true;                             // 任意寄存器不一致就标记失败
@@ -335,6 +347,7 @@ void checkregs(diff_context_t * ref) {
         }
     if(mismatch) {
       printf("DiffTest failed at PC = 0x%08x\n", ref->pc);
+      fflush(stdout);
       assert(0);                                             // difftest 不一致, 直接停止仿真
     }
 }
@@ -567,7 +580,7 @@ void reset(int n) {
   uart_stdin_enabled = false;                               // reset 期间不要向 UART 注入输入
   while(n-- >0) single_cycle();                             // 保持 reset 若干周期; ChipLink/SoC 初始化也需要足够 reset 时间
   dut.reset = 0;                                            // 释放 reset, CPU 开始从 npc_reset_pc() 返回地址执行
-  uart_stdin_enabled = true;                                // reset 结束后恢复 stdin->UART RX 输入
+  uart_stdin_enabled = uart_stdin_requested;                 // 默认关闭, 需要时由 NPC_UART_STDIN=1 打开
 }
 
 extern "C" void npc_trap(int a0_val) {
@@ -797,6 +810,7 @@ void sdb_mainloop(){
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);                       // 把命令行参数交给 Verilator 运行时
   uart_debug_enabled = getenv("NPC_UART_DEBUG") != NULL;    // 设置环境变量即可打开 UART RX 调试打印
+  uart_stdin_requested = getenv("NPC_UART_STDIN") != NULL;  // 设置环境变量才启用 stdin->UART RX
   const char *pc_trace_path = getenv("NPC_PC_TRACE");       // 可用环境变量指定 PC trace 输出路径
   
   boot_time = get_time_internal();                          // 记录程序启动时间
