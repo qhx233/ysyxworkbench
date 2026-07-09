@@ -114,7 +114,7 @@ static const char *ref_so_file = getenv("NEMU_REF_SO") ? getenv("NEMU_REF_SO") :
 #define ENABLE_ITRACE 0                                   // 是否打印指令执行轨迹
 #define ENABLE_MTRACE 0                                   // 是否打印访存轨迹; 当前文件中暂未展开使用
 #define ENABLE_FTRACE 0                                   // 是否打印函数调用/返回轨迹
-#define ENABLE_DIFFTEST 1                                 // 是否编译 difftest 逻辑
+#define ENABLE_DIFFTEST 0                                 // 是否编译 difftest 逻辑
 
 typedef uint32_t paddr_t;                                 // 物理地址类型
 typedef uint32_t word_t;                                  // 机器字类型

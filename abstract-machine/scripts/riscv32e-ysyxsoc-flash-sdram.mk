@@ -54,7 +54,7 @@ run: insert-arg
 	@echo "[ysyxSoC flash->sdram] 正在运行: $(IMAGE_REL).bin"
 	@echo "--------------------------------------------------"
 ifeq ($(NVBOARD),1)
-	$(MAKE) -C $(NPC_HOME) run IMG="$(IMAGE).bin $(IMAGE).elf" ARGS="--flash-boot --no-difftest "
+	$(MAKE) -C $(NPC_HOME) run IMG="$(IMAGE).bin $(IMAGE).elf" ARGS="--flash-boot --no-difftest -b"
 else
-	$(MAKE) -C $(NPC_HOME) sim IMG="$(IMAGE).bin $(IMAGE).elf" ARGS="--flash-boot --no-difftest "
+	NPC_UART_STDIN=1 $(MAKE) -C $(NPC_HOME) sim IMG="$(IMAGE).bin $(IMAGE).elf" ARGS="--flash-boot --no-difftest -b"
 endif
